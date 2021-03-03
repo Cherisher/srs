@@ -1,7 +1,7 @@
 /*
 The MIT License (MIT)
 
-Copyright (c) 2013-2019 Winlin
+Copyright (c) 2013-2020 Winlin
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the "Software"), to deal in
@@ -24,21 +24,68 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #ifndef SRS_UTEST_PUBLIC_SHARED_HPP
 #define SRS_UTEST_PUBLIC_SHARED_HPP
 
+// Before define the private/protected, we must include some system header files.
+// Or it may fail with:
+//      redeclared with different access struct __xfer_bufptrs
+// @see https://stackoverflow.com/questions/47839718/sstream-redeclared-with-public-access-compiler-error
+#include "gtest/gtest.h"
+
+// Public all private and protected members.
+#define private public
+#define protected public
+
 /*
 #include <srs_utest.hpp>
 */
 #include <srs_core.hpp>
 
-#include "gtest/gtest.h"
+#include <string>
+using namespace std;
 
 #include <srs_app_log.hpp>
+#include <srs_kernel_stream.hpp>
 
 // we add an empty macro for upp to show the smart tips.
 #define VOID
 
-// Public all private and protected members.
-#define private public
-#define protected public
+// Temporary disk config.
+extern std::string _srs_tmp_file_prefix;
+// Temporary network config.
+extern std::string _srs_tmp_host;
+extern int _srs_tmp_port;
+extern srs_utime_t _srs_tmp_timeout;
+
+// For errors.
+// @remark we directly delete the err, because we allow user to append message if fail.
+#define HELPER_EXPECT_SUCCESS(x) \
+    if ((err = x) != srs_success) fprintf(stderr, "err %s", srs_error_desc(err).c_str()); \
+    if (err != srs_success) delete err; \
+    EXPECT_TRUE(srs_success == err)
+#define HELPER_EXPECT_FAILED(x) \
+    if ((err = x) != srs_success) delete err; \
+    EXPECT_TRUE(srs_success != err)
+
+// For errors, assert.
+// @remark we directly delete the err, because we allow user to append message if fail.
+#define HELPER_ASSERT_SUCCESS(x) \
+    if ((err = x) != srs_success) fprintf(stderr, "err %s", srs_error_desc(err).c_str()); \
+    if (err != srs_success) delete err; \
+    ASSERT_TRUE(srs_success == err)
+#define HELPER_ASSERT_FAILED(x) \
+    if ((err = x) != srs_success) delete err; \
+    ASSERT_TRUE(srs_success != err)
+
+// For init array data.
+#define HELPER_ARRAY_INIT(buf, sz, val) \
+    for (int _iii = 0; _iii < (int)sz; _iii++) (buf)[_iii] = val
+
+// Dump simple stream to string.
+#define HELPER_BUFFER2STR(io) \
+    string((const char*)(io)->bytes(), (size_t)(io)->length())
+
+// Covert uint8_t array to string.
+#define HELPER_ARR2STR(arr, size) \
+    string((char*)(arr), (int)size)
 
 // the asserts of gtest:
 //    * {ASSERT|EXPECT}_EQ(expected, actual): Tests that expected == actual
@@ -58,7 +105,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // print the bytes.
 void srs_bytes_print(char* pa, int size);
 
-class MockEmptyLog : public SrsFastLog
+class MockEmptyLog : public SrsFileLog
 {
 public:
     MockEmptyLog(SrsLogLevel l);

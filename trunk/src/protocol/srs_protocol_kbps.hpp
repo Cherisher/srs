@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -27,25 +27,7 @@
 #include <srs_core.hpp>
 
 #include <srs_protocol_io.hpp>
-
-class SrsWallClock;
-
-/**
- * a kbps sample, for example, the kbps at time,
- * 10minute kbps sample.
- */
-class SrsKbpsSample
-{
-public:
-    int64_t bytes;
-    int64_t time;
-    int kbps;
-public:
-    SrsKbpsSample();
-    virtual ~SrsKbpsSample();
-public:
-    virtual SrsKbpsSample* update(int64_t b, int64_t t, int k);
-};
+#include <srs_kernel_kbps.hpp>
 
 /**
  * a slice of kbps statistic, for input or output.
@@ -74,7 +56,7 @@ public:
     // @remark, use total_bytes() to get the total bytes of slice.
     int64_t bytes;
     // slice starttime, the first time to record bytes.
-    int64_t starttime;
+    srs_utime_t starttime;
     // session startup bytes number for io when set it,
     // the base offset of bytes for io.
     int64_t io_bytes_base;
@@ -82,10 +64,10 @@ public:
     // cache for io maybe freed.
     int64_t last_bytes;
     // samples
-    SrsKbpsSample sample_30s;
-    SrsKbpsSample sample_1m;
-    SrsKbpsSample sample_5m;
-    SrsKbpsSample sample_60m;
+    SrsRateSample sample_30s;
+    SrsRateSample sample_1m;
+    SrsRateSample sample_5m;
+    SrsRateSample sample_60m;
 public:
     // for the delta bytes.
     int64_t delta_bytes;
@@ -117,21 +99,6 @@ public:
      * resample to generate the value of delta bytes.
      */
     virtual void remark(int64_t* in, int64_t* out) = 0;
-};
-
-/**
- * A time source to provide wall clock.
- */
-class SrsWallClock
-{
-public:
-    SrsWallClock();
-    virtual ~SrsWallClock();
-public:
-    /**
-     * Current time in ms.
-     */
-    virtual int64_t time_ms();
 };
 
 /**
@@ -221,14 +188,14 @@ public:
      *       use the add_delta() is better solutions.
      */
     virtual void sample();
-// interface ISrsProtocolStatistic
+// Interface ISrsProtocolStatistic
 public:
     virtual int64_t get_send_bytes();
     virtual int64_t get_recv_bytes();
-// interface ISrsKbpsDelta
+// Interface ISrsKbpsDelta
 public:
     virtual void remark(int64_t* in, int64_t* out);
-// interface ISrsMemorySizer
+// Interface ISrsMemorySizer
 public:
     virtual int size_memory();
 };

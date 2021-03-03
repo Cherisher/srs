@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -40,6 +40,14 @@ ISrsCoroutineHandler::~ISrsCoroutineHandler()
 {
 }
 
+ISrsStartable::ISrsStartable()
+{
+}
+
+ISrsStartable::~ISrsStartable()
+{
+}
+
 SrsCoroutine::SrsCoroutine()
 {
 }
@@ -74,44 +82,115 @@ srs_error_t SrsDummyCoroutine::pull()
     return srs_error_new(ERROR_THREAD_DUMMY, "dummy pull");
 }
 
-int SrsDummyCoroutine::cid()
+const SrsContextId& SrsDummyCoroutine::cid()
 {
-    return 0;
+    return _srs_context->get_id();
 }
 
-SrsSTCoroutine::SrsSTCoroutine(const string& n, ISrsCoroutineHandler* h, int cid)
+SrsSTCoroutine::SrsSTCoroutine(string n, ISrsCoroutineHandler* h)
 {
-    name = n;
-    handler = h;
-    context = cid;
-    trd = NULL;
-    trd_err = srs_success;
-    started = interrupted = disposed = false;
+    impl_ = new SrsFastCoroutine(n, h);
+}
+
+SrsSTCoroutine::SrsSTCoroutine(string n, ISrsCoroutineHandler* h, SrsContextId cid)
+{
+    impl_ = new SrsFastCoroutine(n, h, cid);
 }
 
 SrsSTCoroutine::~SrsSTCoroutine()
+{
+    srs_freep(impl_);
+}
+
+void SrsSTCoroutine::set_stack_size(int v)
+{
+    impl_->set_stack_size(v);
+}
+
+srs_error_t SrsSTCoroutine::start()
+{
+    return impl_->start();
+}
+
+void SrsSTCoroutine::stop()
+{
+    impl_->stop();
+}
+
+void SrsSTCoroutine::interrupt()
+{
+    impl_->interrupt();
+}
+
+srs_error_t SrsSTCoroutine::pull()
+{
+    return impl_->pull();
+}
+
+const SrsContextId& SrsSTCoroutine::cid()
+{
+    return impl_->cid();
+}
+
+_ST_THREAD_CREATE_PFN _pfn_st_thread_create = (_ST_THREAD_CREATE_PFN)st_thread_create;
+
+SrsFastCoroutine::SrsFastCoroutine(string n, ISrsCoroutineHandler* h)
+{
+    // TODO: FIXME: Reduce duplicated code.
+    name = n;
+    handler = h;
+    trd = NULL;
+    trd_err = srs_success;
+    started = interrupted = disposed = cycle_done = false;
+
+    //  0 use default, default is 64K.
+    stack_size = 0;
+}
+
+SrsFastCoroutine::SrsFastCoroutine(string n, ISrsCoroutineHandler* h, SrsContextId cid)
+{
+    name = n;
+    handler = h;
+    cid_ = cid;
+    trd = NULL;
+    trd_err = srs_success;
+    started = interrupted = disposed = cycle_done = false;
+
+    //  0 use default, default is 64K.
+    stack_size = 0;
+}
+
+SrsFastCoroutine::~SrsFastCoroutine()
 {
     stop();
     
     srs_freep(trd_err);
 }
 
-srs_error_t SrsSTCoroutine::start()
+void SrsFastCoroutine::set_stack_size(int v)
+{
+    stack_size = v;
+}
+
+srs_error_t SrsFastCoroutine::start()
 {
     srs_error_t err = srs_success;
     
     if (started || disposed) {
-        err = srs_error_new(ERROR_THREAD_DISPOSED,
-            "failed for disposed=%d, started=%d", disposed, started);
-        
+        if (disposed) {
+            err = srs_error_new(ERROR_THREAD_DISPOSED, "disposed");
+        } else {
+            err = srs_error_new(ERROR_THREAD_STARTED, "started");
+        }
+
         if (trd_err == srs_success) {
             trd_err = srs_error_copy(err);
         }
         
         return err;
     }
-    
-    if((trd = (srs_thread_t)st_thread_create(pfn, this, 1, 0)) == NULL){
+
+    if ((trd = (srs_thread_t)_pfn_st_thread_create(pfn, this, 1, stack_size)) == NULL) {
         err = srs_error_new(ERROR_ST_CREATE_CYCLE_THREAD, "create failed");
         
         srs_freep(trd_err);
@@ -125,37 +204,40 @@ srs_error_t SrsSTCoroutine::start()
     return err;
 }
 
-void SrsSTCoroutine::stop()
+void SrsFastCoroutine::stop()
 {
-    if (!started || disposed) {
+    if (disposed) {
         return;
     }
     disposed = true;
     
     interrupt();
-    
-    void* res = NULL;
-    int r0 = st_thread_join((st_thread_t)trd, &res);
-    srs_assert(!r0);
-    
-    // Always override the error by the error from worker.
-    if ((srs_error_t)res != srs_success) {
-        srs_freep(trd_err);
-        trd_err = (srs_error_t)res;
-        return;
+
+    // When not started, the rd is NULL.
+    if (trd) {
+        void* res = NULL;
+        int r0 = st_thread_join((st_thread_t)trd, &res);
+        srs_assert(!r0);
+
+        srs_error_t err_res = (srs_error_t)res;
+        if (err_res != srs_success) {
+            // When worker cycle done, the error has already been overrided,
+            // so the trd_err should be equal to err_res.
+            srs_assert(trd_err == err_res);
+        }
     }
     
-    // If there's no error occur from worker, try to set to interrupted error.
-    if (trd_err == srs_success) {
+    // If there's no error occur from worker, try to set to terminated error.
+    if (trd_err == srs_success && !cycle_done) {
         trd_err = srs_error_new(ERROR_THREAD_TERMINATED, "terminated");
     }
     
     return;
 }
 
-void SrsSTCoroutine::interrupt()
+void SrsFastCoroutine::interrupt()
 {
-    if (!started || interrupted) {
+    if (!started || interrupted || cycle_done) {
         return;
     }
     interrupted = true;
@@ -167,38 +249,45 @@ void SrsSTCoroutine::interrupt()
     st_thread_interrupt((st_thread_t)trd);
 }
 
-srs_error_t SrsSTCoroutine::pull()
+const SrsContextId& SrsFastCoroutine::cid()
 {
-    return srs_error_copy(trd_err);
+    return cid_;
 }
 
-int SrsSTCoroutine::cid()
-{
-    return context;
-}
-
-srs_error_t SrsSTCoroutine::cycle()
+srs_error_t SrsFastCoroutine::cycle()
 {
     if (_srs_context) {
-        if (context) {
-            _srs_context->set_id(context);
-        } else {
-            context = _srs_context->generate_id();
+        if (cid_.empty()) {
+            cid_ = _srs_context->generate_id();
         }
+        _srs_context->set_id(cid_);
     }
     
     srs_error_t err = handler->cycle();
     if (err != srs_success) {
         return srs_error_wrap(err, "coroutine cycle");
     }
+
+    // Set cycle done, no need to interrupt it.
+    cycle_done = true;
     
     return err;
 }
 
-void* SrsSTCoroutine::pfn(void* arg)
+void* SrsFastCoroutine::pfn(void* arg)
 {
-    SrsSTCoroutine* p = (SrsSTCoroutine*)arg;
-    void* res = (void*)p->cycle();
-    return res;
+    SrsFastCoroutine* p = (SrsFastCoroutine*)arg;
+
+    srs_error_t err = p->cycle();
+
+    // Set the err for function pull to fetch it.
+    // @see https://github.com/ossrs/srs/pull/1304#issuecomment-480484151
+    if (err != srs_success) {
+        srs_freep(p->trd_err);
+        // It's ok to directly use it, because it's returned by st_thread_join.
+        p->trd_err = err;
+    }
+
+    return (void*)err;
 }
 

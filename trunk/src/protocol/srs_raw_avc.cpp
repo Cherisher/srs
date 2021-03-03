@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -107,34 +107,22 @@ srs_error_t SrsRawH264Stream::sps_demux(char* frame, int nb_frame, string& sps)
     if (nb_frame < 4) {
         return err;
     }
-    
-    sps = "";
-    if (nb_frame > 0) {
-        sps.append(frame, nb_frame);
-    }
-    
-    // should never be empty.
-    if (sps.empty()) {
-        return srs_error_new(ERROR_STREAM_CASTER_AVC_SPS, "no sps");
-    }
-    
+
+    sps = string(frame, nb_frame);
+
     return err;
 }
 
 srs_error_t SrsRawH264Stream::pps_demux(char* frame, int nb_frame, string& pps)
 {
     srs_error_t err = srs_success;
-    
-    pps = "";
-    if (nb_frame > 0) {
-        pps.append(frame, nb_frame);
-    }
-    
-    // should never be empty.
-    if (pps.empty()) {
+
+    if (nb_frame <= 0) {
         return srs_error_new(ERROR_STREAM_CASTER_AVC_PPS, "no pps");
     }
-    
+
+    pps = string(frame, nb_frame);
+
     return err;
 }
 
@@ -153,9 +141,7 @@ srs_error_t SrsRawH264Stream::mux_sequence_header(string sps, string pps, uint32
     //      numOfPictureParameterSets, pictureParameterSetLength
     // Nbytes of pps:
     //      pictureParameterSetNALUnit
-    int nb_packet = 5
-    + 3 + (int)sps.length()
-    + 3 + (int)pps.length();
+    int nb_packet = 5 + (3 + (int)sps.length()) + (3 + (int)pps.length());
     char* packet = new char[nb_packet];
     SrsAutoFreeA(char, packet);
     
@@ -197,7 +183,7 @@ srs_error_t SrsRawH264Stream::mux_sequence_header(string sps, string pps, uint32
         // numOfSequenceParameterSets, always 1
         stream.write_1bytes(0x01);
         // sequenceParameterSetLength
-        stream.write_2bytes(sps.length());
+        stream.write_2bytes((int16_t)sps.length());
         // sequenceParameterSetNALUnit
         stream.write_string(sps);
     }
@@ -208,7 +194,7 @@ srs_error_t SrsRawH264Stream::mux_sequence_header(string sps, string pps, uint32
         // numOfPictureParameterSets, always 1
         stream.write_1bytes(0x01);
         // pictureParameterSetLength
-        stream.write_2bytes(pps.length());
+        stream.write_2bytes((int16_t)pps.length());
         // pictureParameterSetNALUnit
         stream.write_string(pps);
     }
@@ -216,9 +202,8 @@ srs_error_t SrsRawH264Stream::mux_sequence_header(string sps, string pps, uint32
     // TODO: FIXME: for more profile.
     // 5.3.4.2.1 Syntax, ISO_IEC_14496-15-AVC-format-2012.pdf, page 16
     // profile_idc == 100 || profile_idc == 110 || profile_idc == 122 || profile_idc == 144
-    
-    sh = "";
-    sh.append(packet, nb_packet);
+
+    sh = string(packet, nb_packet);
     
     return err;
 }
@@ -248,9 +233,8 @@ srs_error_t SrsRawH264Stream::mux_ipb_frame(char* frame, int nb_frame, string& i
     stream.write_4bytes(NAL_unit_length);
     // NALUnit
     stream.write_bytes(frame, nb_frame);
-    
-    ibp = "";
-    ibp.append(packet, nb_packet);
+
+    ibp = string(packet, nb_packet);
     
     return err;
 }
@@ -421,7 +405,7 @@ srs_error_t SrsRawAacStream::adts_demux(SrsBuffer* stream, char** pframe, int* p
         codec.channel_configuration = channel_configuration;
         codec.frame_length = frame_length;
         
-        // @see srs_audio_write_raw_frame().
+        // The aac sampleing rate defined in srs_aac_srates.
         // TODO: FIXME: maybe need to resample audio.
         codec.sound_format = 10; // AAC
         if (sampling_frequency_index <= 0x0c && sampling_frequency_index > 0x0a) {
@@ -454,7 +438,7 @@ srs_error_t SrsRawAacStream::adts_demux(SrsBuffer* stream, char** pframe, int* p
 srs_error_t SrsRawAacStream::mux_sequence_header(SrsRawAacStreamCodec* codec, string& sh)
 {
     srs_error_t err = srs_success;
-    
+
     // only support aac profile 1-4.
     if (codec->aac_object == SrsAacObjectTypeReserved) {
         return srs_error_new(ERROR_AAC_DATA_INVALID, "invalid aac object");
@@ -462,42 +446,48 @@ srs_error_t SrsRawAacStream::mux_sequence_header(SrsRawAacStreamCodec* codec, st
     
     SrsAacObjectType audioObjectType = codec->aac_object;
     char channelConfiguration = codec->channel_configuration;
-    char samplingFrequencyIndex = codec->sampling_frequency_index;
-    
-    // override the aac samplerate by user specified.
-    // @see https://github.com/ossrs/srs/issues/212#issuecomment-64146899
-    switch (codec->sound_rate) {
-        case SrsAudioSampleRate11025:
-            samplingFrequencyIndex = 0x0a; break;
-        case SrsAudioSampleRate22050:
-            samplingFrequencyIndex = 0x07; break;
-        case SrsAudioSampleRate44100:
-            samplingFrequencyIndex = 0x04; break;
-        default:
-            break;
+
+    // Here we are generating AAC sequence header, the ASC structure,
+    // because we have already parsed the sampling rate from AAC codec,
+    // which is more precise than the sound_rate defined by RTMP.
+    //
+    // For example, AAC sampling_frequency_index is 3(48000HZ) or 4(44100HZ),
+    // the sound_rate is always 3(44100HZ), if we covert sound_rate to
+    // sampling_frequency_index, we may make mistake.
+    uint8_t samplingFrequencyIndex = (uint8_t)codec->sampling_frequency_index;
+    if (samplingFrequencyIndex >= SrsAacSampleRateUnset) {
+        switch (codec->sound_rate) {
+            case SrsAudioSampleRate5512:
+                samplingFrequencyIndex = 0x0c; break;
+            case SrsAudioSampleRate11025:
+                samplingFrequencyIndex = 0x0a; break;
+            case SrsAudioSampleRate22050:
+                samplingFrequencyIndex = 0x07; break;
+            case SrsAudioSampleRate44100:
+                samplingFrequencyIndex = 0x04; break;
+            default:
+                break;
+        }
     }
-    
-    sh = "";
-    
-    char ch = 0;
+    if (samplingFrequencyIndex >= SrsAacSampleRateUnset) {
+        return srs_error_new(ERROR_AAC_DATA_INVALID, "invalid sample index %d", samplingFrequencyIndex);
+    }
+
+    char chs[2];
     // @see ISO_IEC_14496-3-AAC-2001.pdf
     // AudioSpecificConfig (), page 33
     // 1.6.2.1 AudioSpecificConfig
     // audioObjectType; 5 bslbf
-    ch = (audioObjectType << 3) & 0xf8;
+    chs[0] = (audioObjectType << 3) & 0xf8;
     // 3bits left.
     
     // samplingFrequencyIndex; 4 bslbf
-    ch |= (samplingFrequencyIndex >> 1) & 0x07;
-    sh += ch;
-    ch = (samplingFrequencyIndex << 7) & 0x80;
-    if (samplingFrequencyIndex == 0x0f) {
-        return srs_error_new(ERROR_AAC_DATA_INVALID, "invalid sampling frequency index");
-    }
+    chs[0] |= (samplingFrequencyIndex >> 1) & 0x07;
+    chs[1] = (samplingFrequencyIndex << 7) & 0x80;
     // 7bits left.
     
     // channelConfiguration; 4 bslbf
-    ch |= (channelConfiguration << 3) & 0x78;
+    chs[1] |= (channelConfiguration << 3) & 0x78;
     // 3bits left.
     
     // GASpecificConfig(), page 451
@@ -505,7 +495,7 @@ srs_error_t SrsRawAacStream::mux_sequence_header(SrsRawAacStreamCodec* codec, st
     // frameLengthFlag; 1 bslbf
     // dependsOnCoreCoder; 1 bslbf
     // extensionFlag; 1 bslbf
-    sh += ch;
+    sh = string((char*)chs, sizeof(chs));
     
     return err;
 }

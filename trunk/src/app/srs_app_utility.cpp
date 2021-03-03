@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -29,16 +29,15 @@
 #include <arpa/inet.h>
 #include <signal.h>
 #include <sys/wait.h>
-#include <math.h>
 #include <netdb.h>
 
-#ifdef SRS_OSX
-#include <sys/sysctl.h>
-#endif
 #include <stdlib.h>
 #include <sys/time.h>
 #include <math.h>
 #include <map>
+#ifdef SRS_OSX
+#include <sys/sysctl.h>
+#endif
 using namespace std;
 
 #include <srs_kernel_log.hpp>
@@ -236,7 +235,7 @@ void srs_update_system_rusage()
         return;
     }
     
-    _srs_system_rusage.sample_time = srs_get_system_time_ms();
+    _srs_system_rusage.sample_time = srsu2ms(srs_update_system_time());
     
     _srs_system_rusage.ok = true;
 }
@@ -360,11 +359,8 @@ bool get_proc_system_stat(SrsProcSystemStat& r)
     }
     
     fclose(f);
-#else
-    // TODO: FIXME: impelments it.
-    // Fuck all of you who use osx for a long time and never patch the osx features for srs.
 #endif
-    
+
     r.ok = true;
     
     return true;
@@ -399,11 +395,8 @@ bool get_proc_self_stat(SrsProcSelfStat& r)
            &r.guest_time, &r.cguest_time);
     
     fclose(f);
-#else
-    // TODO: FIXME: impelments it.
-    // Fuck all of you who use osx for a long time and never patch the osx features for srs.
 #endif
-    
+
     r.ok = true;
     
     return true;
@@ -427,7 +420,7 @@ void srs_update_proc_stat()
             return;
         }
         
-        r.sample_time = srs_get_system_time_ms();
+        r.sample_time = srsu2ms(srs_update_system_time());
         
         // calc usage in percent
         SrsProcSystemStat& o = _srs_system_cpu_system_stat;
@@ -453,7 +446,7 @@ void srs_update_proc_stat()
             return;
         }
         
-        r.sample_time = srs_get_system_time_ms();
+        r.sample_time = srsu2ms(srs_update_system_time());
         
         // calc usage in percent
         SrsProcSelfStat& o = _srs_system_cpu_self_stat;
@@ -505,7 +498,7 @@ bool srs_get_disk_vmstat_stat(SrsDiskStat& r)
         return false;
     }
     
-    r.sample_time = srs_get_system_time_ms();
+    r.sample_time = srsu2ms(srs_update_system_time());
     
     static char buf[1024];
     while (fgets(buf, sizeof(buf), f)) {
@@ -518,11 +511,8 @@ bool srs_get_disk_vmstat_stat(SrsDiskStat& r)
     }
     
     fclose(f);
-#else
-    // TODO: FIXME: impelments it.
-    // Fuck all of you who use osx for a long time and never patch the osx features for srs.
 #endif
-    
+
     r.ok = true;
     
     return true;
@@ -531,15 +521,15 @@ bool srs_get_disk_vmstat_stat(SrsDiskStat& r)
 bool srs_get_disk_diskstats_stat(SrsDiskStat& r)
 {
     r.ok = true;
-    r.sample_time = srs_get_system_time_ms();
-    
+    r.sample_time = srsu2ms(srs_update_system_time());
+
+#ifndef SRS_OSX
     // if disabled, ignore all devices.
     SrsConfDirective* conf = _srs_config->get_stats_disk_device();
     if (conf == NULL) {
         return true;
     }
-    
-#ifndef SRS_OSX
+
     FILE* f = fopen("/proc/diskstats", "r");
     if (f == NULL) {
         srs_warn("open vmstat failed, ignore");
@@ -604,11 +594,8 @@ bool srs_get_disk_diskstats_stat(SrsDiskStat& r)
     }
     
     fclose(f);
-#else
-    // TODO: FIXME: impelments it.
-    // Fuck all of you who use osx for a long time and never patch the osx features for srs.
 #endif
-    
+
     r.ok = true;
     
     return true;
@@ -699,7 +686,7 @@ SrsMemInfo* srs_get_meminfo()
 void srs_update_meminfo()
 {
     SrsMemInfo& r = _srs_system_meminfo;
-    
+
 #ifndef SRS_OSX
     FILE* f = fopen("/proc/meminfo", "r");
     if (f == NULL) {
@@ -726,12 +713,9 @@ void srs_update_meminfo()
     }
     
     fclose(f);
-#else
-    // TODO: FIXME: impelments it.
-    // Fuck all of you who use osx for a long time and never patch the osx features for srs.
 #endif
-    
-    r.sample_time = srs_get_system_time_ms();
+
+    r.sample_time = srsu2ms(srs_update_system_time());
     r.MemActive = r.MemTotal - r.MemFree;
     r.RealInUse = r.MemActive - r.Buffers - r.Cached;
     r.NotInUse = r.MemTotal - r.RealInUse;
@@ -795,8 +779,8 @@ void srs_update_platform_info()
 {
     SrsPlatformInfo& r = _srs_system_platform_info;
     
-    r.srs_startup_time = srs_get_system_startup_time_ms();
-    
+    r.srs_startup_time = srsu2ms(srs_get_system_startup_time());
+
 #ifndef SRS_OSX
     if (true) {
         FILE* f = fopen("/proc/uptime", "r");
@@ -831,7 +815,7 @@ void srs_update_platform_info()
     if (true) {
         struct timeval tv;
         size_t len = sizeof(timeval);
-        
+
         int mib[2];
         mib[0] = CTL_KERN;
         mib[1] = KERN_BOOTTIME;
@@ -839,17 +823,17 @@ void srs_update_platform_info()
             srs_warn("sysctl boottime failed, ignore");
             return;
         }
-        
+
         time_t bsec = tv.tv_sec;
         time_t csec = ::time(NULL);
         r.os_uptime = difftime(csec, bsec);
     }
-    
+
     // man 3 sysctl
     if (true) {
         struct loadavg la;
         size_t len = sizeof(loadavg);
-        
+
         int mib[2];
         mib[0] = CTL_VM;
         mib[1] = VM_LOADAVG;
@@ -857,14 +841,102 @@ void srs_update_platform_info()
             srs_warn("sysctl loadavg failed, ignore");
             return;
         }
-        
+
         r.load_one_minutes = (double)la.ldavg[0] / la.fscale;
         r.load_five_minutes = (double)la.ldavg[1] / la.fscale;
         r.load_fifteen_minutes = (double)la.ldavg[2] / la.fscale;
     }
 #endif
-    
+
     r.ok = true;
+}
+
+SrsSnmpUdpStat::SrsSnmpUdpStat()
+{
+    ok = false;
+
+    in_datagrams = 0;
+    no_ports = 0;
+    in_errors = 0;
+    out_datagrams = 0;
+    rcv_buf_errors = 0;
+    snd_buf_errors = 0;
+    in_csum_errors = 0;
+
+    rcv_buf_errors_delta = 0;
+    snd_buf_errors_delta = 0;
+}
+
+SrsSnmpUdpStat::~SrsSnmpUdpStat()
+{
+}
+
+static SrsSnmpUdpStat _srs_snmp_udp_stat;
+
+bool get_udp_snmp_statistic(SrsSnmpUdpStat& r)
+{
+#ifndef SRS_OSX
+    if (true) {
+        FILE* f = fopen("/proc/net/snmp", "r");
+        if (f == NULL) {
+            srs_warn("open proc network snmp failed, ignore");
+            return false;
+        }
+
+        // ignore title.
+        static char buf[1024];
+        fgets(buf, sizeof(buf), f);
+
+        while (fgets(buf, sizeof(buf), f)) {
+            // udp stat title
+            if (strncmp(buf, "Udp: ", 5) == 0) {
+                // read tcp stat data
+                if (!fgets(buf, sizeof(buf), f)) {
+                    break;
+                }
+                // parse tcp stat data
+                if (strncmp(buf, "Udp: ", 5) == 0) {
+                    sscanf(buf + 5, "%llu %llu %llu %llu %llu %llu %llu\n",
+                        &r.in_datagrams,
+                        &r.no_ports,
+                        &r.in_errors,
+                        &r.out_datagrams,
+                        &r.rcv_buf_errors,
+                        &r.snd_buf_errors,
+                        &r.in_csum_errors);
+                }
+            }
+        }
+        fclose(f);
+    }
+#endif
+    r.ok = true;
+
+    return true;
+}
+
+SrsSnmpUdpStat* srs_get_udp_snmp_stat()
+{
+    return &_srs_snmp_udp_stat;
+}
+
+void srs_update_udp_snmp_statistic()
+{
+    SrsSnmpUdpStat r;
+    if (!get_udp_snmp_statistic(r)) {
+        return;
+    }
+
+    SrsSnmpUdpStat& o = _srs_snmp_udp_stat;
+    if (o.rcv_buf_errors > 0) {
+        r.rcv_buf_errors_delta = int(r.rcv_buf_errors - o.rcv_buf_errors);
+    }
+
+    if (o.snd_buf_errors > 0) {
+        r.snd_buf_errors_delta = int(r.snd_buf_errors - o.snd_buf_errors);
+    }
+
+    _srs_snmp_udp_stat = r;
 }
 
 SrsNetworkDevices::SrsNetworkDevices()
@@ -940,15 +1012,12 @@ void srs_update_network_devices()
             _nb_srs_system_network_devices = i + 1;
             srs_info("scan network device ifname=%s, total=%d", r.name, _nb_srs_system_network_devices);
             
-            r.sample_time = srs_get_system_time_ms();
+            r.sample_time = srsu2ms(srs_update_system_time());
             r.ok = true;
         }
         
         fclose(f);
     }
-#else
-    // TODO: FIXME: impelments it.
-    // Fuck all of you who use osx for a long time and never patch the osx features for srs.
 #endif
 }
 
@@ -959,6 +1028,9 @@ SrsNetworkRtmpServer::SrsNetworkRtmpServer()
     nb_conn_sys = nb_conn_srs = 0;
     nb_conn_sys_et = nb_conn_sys_tw = 0;
     nb_conn_sys_udp = 0;
+    rkbps = skbps = 0;
+    rkbps_30s = skbps_30s = 0;
+    rkbps_5m = skbps_5m = 0;
 }
 
 static SrsNetworkRtmpServer _srs_network_rtmp_server;
@@ -996,7 +1068,7 @@ void srs_update_rtmp_server(int nb_conn, SrsKbps* kbps)
     int nb_tcp_total = 0;
     int nb_tcp_mem = 0;
     int nb_udp4 = 0;
-    
+
 #ifndef SRS_OSX
     if (true) {
         FILE* f = fopen("/proc/net/sockstat", "r");
@@ -1029,7 +1101,6 @@ void srs_update_rtmp_server(int nb_conn, SrsKbps* kbps)
     }
 #else
     // TODO: FIXME: impelments it.
-    // Fuck all of you who use osx for a long time and never patch the osx features for srs.
     nb_socks = 0;
     nb_tcp4_hashed = 0;
     nb_tcp_orphans = 0;
@@ -1038,9 +1109,9 @@ void srs_update_rtmp_server(int nb_conn, SrsKbps* kbps)
     nb_tcp_mem = 0;
     nb_udp4 = 0;
 #endif
-    
+
     int nb_tcp_estab = 0;
-    
+
 #ifndef SRS_OSX
     if (true) {
         FILE* f = fopen("/proc/net/snmp", "r");
@@ -1071,11 +1142,8 @@ void srs_update_rtmp_server(int nb_conn, SrsKbps* kbps)
         
         fclose(f);
     }
-#else
-    // TODO: FIXME: impelments it.
-    // Fuck all of you who use osx for a long time and never patch the osx features for srs.
 #endif
-    
+
     // @see: https://github.com/shemminger/iproute2/blob/master/misc/ss.c
     // TODO: FIXME: ignore the slabstat, @see: get_slabstat()
     if (true) {
@@ -1090,7 +1158,7 @@ void srs_update_rtmp_server(int nb_conn, SrsKbps* kbps)
         r.ok = true;
         
         r.nb_conn_srs = nb_conn;
-        r.sample_time = srs_get_system_time_ms();
+        r.sample_time = srsu2ms(srs_update_system_time());
         
         r.rbytes = kbps->get_recv_bytes();
         r.rkbps = kbps->get_recv_kbps();
@@ -1151,7 +1219,7 @@ string srs_get_peer_ip(int fd)
     // discovery client information
     sockaddr_storage addr;
     socklen_t addrlen = sizeof(addr);
-    if (getsockname(fd, (sockaddr*)&addr, &addrlen) == -1) {
+    if (getpeername(fd, (sockaddr*)&addr, &addrlen) == -1) {
         return "";
     }
 
@@ -1166,18 +1234,29 @@ string srs_get_peer_ip(int fd)
     return std::string(saddr);
 }
 
-bool srs_is_digit_number(const string& str)
+int srs_get_peer_port(int fd)
 {
-    if (str.empty()) {
-        return false;
+    // discovery client information
+    sockaddr_storage addr;
+    socklen_t addrlen = sizeof(addr);
+    if (getpeername(fd, (sockaddr*)&addr, &addrlen) == -1) {
+        return 0;
     }
-    
-    int v = ::atoi(str.c_str());
-    int powv = (int)pow(10, str.length() - 1);
-    return  v / powv >= 1 && v / powv <= 9;
+
+    int port = 0;
+    switch(addr.ss_family) {
+        case AF_INET:
+            port = ntohs(((sockaddr_in*)&addr)->sin_port);
+         break;
+        case AF_INET6:
+            port = ntohs(((sockaddr_in6*)&addr)->sin6_port);
+         break;
+    }
+
+    return port;
 }
 
-bool srs_is_boolean(const string& str)
+bool srs_is_boolean(string str)
 {
     return str == "true" || str == "false";
 }
@@ -1199,7 +1278,7 @@ void srs_api_dump_summaries(SrsJsonObject* obj)
         self_mem_percent = (float)(r->r.ru_maxrss / (double)m->MemTotal);
     }
     
-    int64_t now = srs_get_system_time_ms();
+    int64_t now = srsu2ms(srs_update_system_time());
     double srs_uptime = (now - p->srs_startup_time) / 100 / 10.0;
     
     int64_t n_sample_time = 0;
@@ -1291,5 +1370,83 @@ void srs_api_dump_summaries(SrsJsonObject* obj)
     sys->set("conn_sys_tw", SrsJsonAny::integer(nrs->nb_conn_sys_tw));
     sys->set("conn_sys_udp", SrsJsonAny::integer(nrs->nb_conn_sys_udp));
     sys->set("conn_srs", SrsJsonAny::integer(nrs->nb_conn_srs));
+}
+
+string srs_string_dumps_hex(const std::string& str)
+{
+    return srs_string_dumps_hex(str.c_str(), str.size());
+}
+
+string srs_string_dumps_hex(const char* str, int length)
+{
+    return srs_string_dumps_hex(str, length, INT_MAX);
+}
+
+string srs_string_dumps_hex(const char* str, int length, int limit)
+{
+    return srs_string_dumps_hex(str, length, limit, ' ', 128, '\n');
+}
+
+string srs_string_dumps_hex(const char* str, int length, int limit, char seperator, int line_limit, char newline)
+{
+    // 1 byte trailing '\0'.
+    const int LIMIT = 1024*16 + 1;
+    static char buf[LIMIT];
+
+    int len = 0;
+    for (int i = 0; i < length && i < limit && len < LIMIT; ++i) {
+        int nb = snprintf(buf + len, LIMIT - len, "%02x", (uint8_t)str[i]);
+        if (nb < 0 || nb >= LIMIT - len) {
+            break;
+        }
+        len += nb;
+
+        // Only append seperator and newline when not last byte.
+        if (i < length - 1 && i < limit - 1 && len < LIMIT) {
+            if (seperator) {
+                buf[len++] = seperator;
+            }
+
+            if (newline && line_limit && i > 0 && ((i + 1) % line_limit) == 0) {
+                buf[len++] = newline;
+            }
+        }
+    }
+
+    // Empty string.
+    if (len <= 0) {
+        return "";
+    }
+
+    // If overflow, cut the trailing newline.
+    if (newline && len >= LIMIT - 2 && buf[len - 1] == newline) {
+        len--;
+    }
+
+    // If overflow, cut the trailing seperator.
+    if (seperator && len >= LIMIT - 3 && buf[len - 1] == seperator) {
+        len--;
+    }
+
+    return string(buf, len);
+}
+
+string srs_getenv(string key)
+{
+    string ekey = key;
+    if (srs_string_starts_with(key, "$")) {
+        ekey = key.substr(1);
+    }
+
+    if (ekey.empty()) {
+        return "";
+    }
+
+    char* value = ::getenv(ekey.c_str());
+    if (value) {
+        return value;
+    }
+
+    return "";
 }
 

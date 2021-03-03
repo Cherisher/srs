@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -26,7 +26,7 @@
 
 #include <srs_core.hpp>
 
-#ifdef SRS_AUTO_HDS
+#ifdef SRS_HDS
 
 #include <list>
 
@@ -35,6 +35,7 @@ class SrsSharedPtrMessage;
 class SrsHdsFragment;
 class SrsSource;
 
+// Mux RTMP to Adobe HDS streaming.
 class SrsHds
 {
 public:

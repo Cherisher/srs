@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -52,7 +52,7 @@ srs_error_t proxy_hls2rtmp(std::string hls, std::string rtmp);
 
 // @global log and context.
 ISrsLog* _srs_log = new SrsConsoleLog(SrsLogLevelTrace, false);
-ISrsThreadContext* _srs_context = new SrsThreadContext();
+ISrsContext* _srs_context = new SrsThreadContext();
 
 /**
  * main entrance.
@@ -63,8 +63,8 @@ int main(int argc, char** argv)
     srs_assert(srs_is_little_endian());
     
     // directly failed when compile limited.
-#if defined(SRS_AUTO_GPERF_MP) || defined(SRS_AUTO_GPERF_MP) \
-    || defined(SRS_AUTO_GPERF_MC) || defined(SRS_AUTO_GPERF_MP)
+#if defined(SRS_GPERF_MP) || defined(SRS_GPERF_MP) \
+    || defined(SRS_GPERF_MC) || defined(SRS_GPERF_MP)
     srs_error("donot support gmc/gmp/gcp/gprof");
     exit(-1);
 #endif
@@ -147,6 +147,7 @@ private:
             skip = false;
             sent = false;
             dirty = false;
+            duration = 0.0;
         }
         
         int fetch(std::string m3u8);
@@ -154,7 +155,7 @@ private:
 private:
     SrsHttpUri* in_hls;
     std::vector<SrsTsPiece*> pieces;
-    int64_t next_connect_time;
+    srs_utime_t next_connect_time;
 private:
     SrsTsContext* context;
 public:
@@ -213,10 +214,10 @@ int SrsIngestHlsInput::connect()
 {
     int ret = ERROR_SUCCESS;
     
-    int64_t now = srs_update_system_time_ms();
+    srs_utime_t now = srs_update_system_time();
     if (now < next_connect_time) {
-        srs_trace("input hls wait for %dms", next_connect_time - now);
-        srs_usleep((next_connect_time - now) * 1000);
+        srs_trace("input hls wait for %dms", srsu2msi(next_connect_time - now));
+        srs_usleep(next_connect_time - now);
     }
     
     // set all ts to dirty.
@@ -369,7 +370,7 @@ int SrsIngestHlsInput::parseM3u8(SrsHttpUri* url, double& td, double& duration)
     SrsHttpClient client;
     srs_trace("parse input hls %s", url->get_url().c_str());
     
-    if ((err = client.initialize(url->get_host(), url->get_port())) != srs_success) {
+    if ((err = client.initialize(url->get_schema(), url->get_host(), url->get_port())) != srs_success) {
         // TODO: FIXME: Use error
         ret = srs_error_code(err);
         srs_freep(err);
@@ -559,7 +560,7 @@ int SrsIngestHlsInput::fetch_all_ts(bool fresh_m3u8)
         
         // only wait for a duration of last piece.
         if (i == (int)pieces.size() - 1) {
-            next_connect_time = srs_update_system_time_ms() + (int)tp->duration * 1000;
+            next_connect_time = srs_update_system_time() + tp->duration * SRS_UTIME_SECONDS;
         }
     }
     
@@ -608,7 +609,7 @@ int SrsIngestHlsInput::SrsTsPiece::fetch(string m3u8)
     }
     
     // initialize the fresh http client.
-    if ((ret = client.initialize(uri.get_host(), uri.get_port()) != ERROR_SUCCESS)) {
+    if ((ret = client.initialize(uri.get_schema(), uri.get_host(), uri.get_port()) != ERROR_SUCCESS)) {
         return ret;
     }
     
@@ -662,10 +663,10 @@ private:
 public:
     SrsIngestHlsOutput(SrsHttpUri* rtmp);
     virtual ~SrsIngestHlsOutput();
-// interface ISrsTsHandler
+// Interface ISrsTsHandler
 public:
     virtual srs_error_t on_ts_message(SrsTsMessage* msg);
-// interface IAacHandler
+// Interface IAacHandler
 public:
     virtual int on_aac_frame(char* frame, int frame_size, double duration);
 private:
@@ -696,7 +697,7 @@ SrsIngestHlsOutput::SrsIngestHlsOutput(SrsHttpUri* rtmp)
 {
     out_rtmp = rtmp;
     disconnected = false;
-    raw_aac_dts = srs_update_system_time_ms();
+    raw_aac_dts = srsu2ms(srs_update_system_time());
     
     req = NULL;
     sdk = NULL;
@@ -1275,8 +1276,8 @@ int SrsIngestHlsOutput::connect()
     srs_trace("connect output=%s", url.c_str());
     
     // connect host.
-    int64_t cto = SRS_CONSTS_RTMP_TMMS;
-    int64_t sto = SRS_CONSTS_RTMP_PULSE_TMMS;
+    srs_utime_t cto =SRS_CONSTS_RTMP_TIMEOUT;
+    srs_utime_t sto =SRS_CONSTS_RTMP_PULSE;
     sdk = new SrsBasicRtmpClient(url, cto, sto);
     
     if ((err = sdk->connect()) != srs_success) {
@@ -1284,7 +1285,7 @@ int SrsIngestHlsOutput::connect()
         ret = srs_error_code(err);
         srs_freep(err);
         close();
-        srs_error("mpegts: connect %s failed, cto=%" PRId64 ", sto=%" PRId64 ". ret=%d", url.c_str(), cto, sto, ret);
+        srs_error("mpegts: connect %s failed, cto=%dms, sto=%dms. ret=%d", url.c_str(), srsu2msi(cto), srsu2msi(sto), ret);
         return ret;
     }
     

@@ -1,7 +1,7 @@
 /*
 The MIT License (MIT)
 
-Copyright (c) 2013-2019 Winlin
+Copyright (c) 2013-2020 Winlin
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the "Software"), to deal in
@@ -37,7 +37,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <srs_protocol_stream.hpp>
 #include <srs_protocol_kbps.hpp>
 
-using namespace _srs_internal;
+using namespace srs_internal;
 
 #include <srs_protocol_io.hpp>
 
@@ -46,22 +46,19 @@ class MockEmptyIO : public ISrsProtocolReadWriter
 public:
     MockEmptyIO();
     virtual ~MockEmptyIO();
-// for protocol
-public:
-    virtual bool is_never_timeout(int64_t tm);
 // for handshake.
 public:
     virtual srs_error_t read_fully(void* buf, size_t size, ssize_t* nread);
     virtual srs_error_t write(void* buf, size_t size, ssize_t* nwrite);
 // for protocol
 public:
-    virtual void set_recv_timeout(int64_t tm);
-    virtual int64_t get_recv_timeout();
+    virtual void set_recv_timeout(srs_utime_t tm);
+    virtual srs_utime_t get_recv_timeout();
     virtual int64_t get_recv_bytes();
 // for protocol
 public:
-    virtual void set_send_timeout(int64_t tm);
-    virtual int64_t get_send_timeout();
+    virtual void set_send_timeout(srs_utime_t tm);
+    virtual srs_utime_t get_send_timeout();
     virtual int64_t get_send_bytes();
     virtual srs_error_t writev(const iovec *iov, int iov_size, ssize_t* nwrite);
 // for protocol/amf0/msg-codec
@@ -72,9 +69,9 @@ public:
 class MockBufferIO : public ISrsProtocolReadWriter
 {
 public:
-    // The send/recv timeout in ms.
-    int64_t rtm;
-    int64_t stm;
+    // The send/recv timeout in srs_utime_t.
+    srs_utime_t rtm;
+    srs_utime_t stm;
     // The send/recv data in bytes.
     int64_t rbytes;
     int64_t sbytes;
@@ -83,26 +80,35 @@ public:
     // data buffer for socket send.
     SrsSimpleStream out_buffer;
 public:
+    // Mock error for io.
+    srs_error_t in_err;
+    srs_error_t out_err;
+public:
     MockBufferIO();
     virtual ~MockBufferIO();
 public:
+    virtual int length();
     virtual MockBufferIO* append(std::string data);
-// for protocol
+    virtual MockBufferIO* append(MockBufferIO* data);
+    virtual MockBufferIO* append(uint8_t* data, int size);
 public:
-    virtual bool is_never_timeout(int64_t tm);
+    virtual int out_length();
+    virtual MockBufferIO* out_append(std::string data);
+    virtual MockBufferIO* out_append(MockBufferIO* data);
+    virtual MockBufferIO* out_append(uint8_t* data, int size);
 // for handshake.
 public:
     virtual srs_error_t read_fully(void* buf, size_t size, ssize_t* nread);
     virtual srs_error_t write(void* buf, size_t size, ssize_t* nwrite);
 // for protocol
 public:
-    virtual void set_recv_timeout(int64_t tm);
-    virtual int64_t get_recv_timeout();
+    virtual void set_recv_timeout(srs_utime_t tm);
+    virtual srs_utime_t get_recv_timeout();
     virtual int64_t get_recv_bytes();
 // for protocol
 public:
-    virtual void set_send_timeout(int64_t tm);
-    virtual int64_t get_send_timeout();
+    virtual void set_send_timeout(srs_utime_t tm);
+    virtual srs_utime_t get_send_timeout();
     virtual int64_t get_send_bytes();
     virtual srs_error_t writev(const iovec *iov, int iov_size, ssize_t* nwrite);
 // for protocol/amf0/msg-codec
@@ -136,9 +142,9 @@ public:
     MockWallClock();
     virtual ~MockWallClock();
 public:
-    virtual int64_t time_ms();
+    virtual srs_utime_t now();
 public:
-    virtual MockWallClock* set_clock(int64_t ms);
+    virtual MockWallClock* set_clock(srs_utime_t v);
 };
 
 #endif

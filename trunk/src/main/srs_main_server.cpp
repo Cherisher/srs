@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -30,11 +30,15 @@
 #include <sstream>
 using namespace std;
 
-#ifdef SRS_AUTO_GPERF_MP
+#ifdef SRS_GPERF_MP
 #include <gperftools/heap-profiler.h>
 #endif
-#ifdef SRS_AUTO_GPERF_CP
+#ifdef SRS_GPERF_CP
 #include <gperftools/profiler.h>
+#endif
+
+#ifdef SRS_GPERF
+#include <gperftools/malloc_extension.h>
 #endif
 
 #include <unistd.h>
@@ -48,21 +52,33 @@ using namespace std;
 #include <srs_core_performance.hpp>
 #include <srs_app_utility.hpp>
 #include <srs_core_autofree.hpp>
+#include <srs_kernel_file.hpp>
+#include <srs_app_hybrid.hpp>
+#ifdef SRS_RTC
+#include <srs_app_rtc_conn.hpp>
+#include <srs_app_rtc_server.hpp>
+#endif
+
+#ifdef SRS_SRT
+#include <srt_server.hpp>
+#endif
 
 // pre-declare
-srs_error_t run(SrsServer* svr);
-srs_error_t run_master(SrsServer* svr);
+srs_error_t run_directly_or_daemon();
+srs_error_t run_hybrid_server();
 void show_macro_features();
-string srs_getenv(const char* name);
 
 // @global log and context.
-ISrsLog* _srs_log = new SrsFastLog();
-ISrsThreadContext* _srs_context = new SrsThreadContext();
+ISrsLog* _srs_log = new SrsFileLog();
+ISrsContext* _srs_context = new SrsThreadContext();
 // @global config object for app module.
 SrsConfig* _srs_config = new SrsConfig();
 
 // @global version of srs, which can grep keyword "XCORE"
 extern const char* _srs_version;
+
+// @global main SRS server, for debugging
+SrsServer* _srs_server = NULL;
 
 /**
  * main entrance.
@@ -73,18 +89,21 @@ srs_error_t do_main(int argc, char** argv)
     
     // TODO: support both little and big endian.
     srs_assert(srs_is_little_endian());
+
+    // For RTC to generating random ICE username.
+    ::srandom((unsigned long)(srs_update_system_time() | (::getpid()<<13)));
     
     // for gperf gmp or gcp,
     // should never enable it when not enabled for performance issue.
-#ifdef SRS_AUTO_GPERF_MP
+#ifdef SRS_GPERF_MP
     HeapProfilerStart("gperf.srs.gmp");
 #endif
-#ifdef SRS_AUTO_GPERF_CP
+#ifdef SRS_GPERF_CP
     ProfilerStart("gperf.srs.gcp");
 #endif
     
     // directly compile error when these two macro defines.
-#if defined(SRS_AUTO_GPERF_MC) && defined(SRS_AUTO_GPERF_MP)
+#if defined(SRS_GPERF_MC) && defined(SRS_GPERF_MP)
 #error ("option --with-gmc confict with --with-gmp, "
     "@see: http://google-perftools.googlecode.com/svn/trunk/doc/heap_checker.html\n"
     "Note that since the heap-checker uses the heap-profiling framework internally, "
@@ -92,7 +111,7 @@ srs_error_t do_main(int argc, char** argv)
 #endif
     
     // never use gmp to check memory leak.
-#ifdef SRS_AUTO_GPERF_MP
+#ifdef SRS_GPERF_MP
 #warning "gmp is not used for memory leak, please use gmc instead."
 #endif
     
@@ -118,17 +137,16 @@ srs_error_t do_main(int argc, char** argv)
     }
     
     // config already applied to log.
-    srs_trace(RTMP_SIG_SRS_SERVER ", stable is " RTMP_SIG_SRS_PRIMARY);
-    srs_trace("license: " RTMP_SIG_SRS_LICENSE ", " RTMP_SIG_SRS_COPYRIGHT);
-    srs_trace("authors: " RTMP_SIG_SRS_AUTHROS);
-    srs_trace("contributors: " SRS_AUTO_CONSTRIBUTORS);
-    srs_trace("build: %s, configure:%s, uname: %s", SRS_AUTO_BUILD_DATE, SRS_AUTO_USER_CONFIGURE, SRS_AUTO_UNAME);
-    srs_trace("configure detail: " SRS_AUTO_CONFIGURE);
-#ifdef SRS_AUTO_EMBEDED_TOOL_CHAIN
-    srs_trace("crossbuild tool chain: " SRS_AUTO_EMBEDED_TOOL_CHAIN);
+    srs_trace2(TAG_MAIN, "%s, %s", RTMP_SIG_SRS_SERVER, RTMP_SIG_SRS_LICENSE);
+    srs_trace("authors: %s", RTMP_SIG_SRS_AUTHORS);
+    srs_trace("contributors: %s", SRS_CONSTRIBUTORS);
+    srs_trace("cwd=%s, work_dir=%s, build: %s, configure: %s, uname: %s, osx: %d",
+        _srs_config->cwd().c_str(), cwd.c_str(), SRS_BUILD_DATE, SRS_USER_CONFIGURE, SRS_UNAME, SRS_OSX_BOOL);
+    srs_trace("configure detail: " SRS_CONFIGURE);
+#ifdef SRS_EMBEDED_TOOL_CHAIN
+    srs_trace("crossbuild tool chain: " SRS_EMBEDED_TOOL_CHAIN);
 #endif
-    srs_trace("cwd=%s, work_dir=%s", _srs_config->cwd().c_str(), cwd.c_str());
-    
+
     // for memory check or detect.
     if (true) {
         stringstream ss;
@@ -146,7 +164,7 @@ srs_error_t do_main(int argc, char** argv)
         ss << "glic mem-check env MALLOC_CHECK_ " << mcov << "=>" << mcnv << ", LIBC_FATAL_STDERR_ " << lfsov << "=>" << lfsnv << ".";
 #endif
         
-#ifdef SRS_AUTO_GPERF_MC
+#ifdef SRS_GPERF_MC
         string hcov = srs_getenv("HEAPCHECK");
         if (hcov.empty()) {
             string cpath = _srs_config->config();
@@ -156,7 +174,7 @@ srs_error_t do_main(int argc, char** argv)
         }
 #endif
         
-#ifdef SRS_AUTO_GPERF_MD
+#ifdef SRS_GPERF_MD
         char* TCMALLOC_PAGE_FENCE = getenv("TCMALLOC_PAGE_FENCE");
         if (!TCMALLOC_PAGE_FENCE || strcmp(TCMALLOC_PAGE_FENCE, "1")) {
             srs_warn("gmd enabled without env TCMALLOC_PAGE_FENCE=1");
@@ -178,11 +196,18 @@ srs_error_t do_main(int argc, char** argv)
     
     // features
     show_macro_features();
+
+#ifdef SRS_GPERF
+    // For tcmalloc, use slower release rate.
+    if (true) {
+        double trr = _srs_config->tcmalloc_release_rate();
+        double otrr = MallocExtension::instance()->GetMemoryReleaseRate();
+        MallocExtension::instance()->SetMemoryReleaseRate(trr);
+        srs_trace("tcmalloc: set release-rate %.2f=>%.2f", otrr, trr);
+    }
+#endif
     
-    SrsServer* svr = new SrsServer();
-    SrsAutoFree(SrsServer, svr);
-    
-    if ((err = run(svr)) != srs_success) {
+    if ((err = run_directly_or_daemon()) != srs_success) {
         return srs_error_wrap(err, "run");
     }
     
@@ -190,8 +215,11 @@ srs_error_t do_main(int argc, char** argv)
 }
 
 int main(int argc, char** argv) {
+    // For background context id.
+    _srs_context->set_id(_srs_context->generate_id());
+
     srs_error_t err = do_main(argc, argv);
-    
+
     if (err != srs_success) {
         srs_error("Failed, %s", srs_error_desc(err).c_str());
     }
@@ -215,7 +243,8 @@ void show_macro_features()
         ss << ", rch:" << srs_bool2switch(true);
         ss << ", dash:" << "on";
         ss << ", hls:" << srs_bool2switch(true);
-        ss << ", hds:" << srs_bool2switch(SRS_AUTO_HDS_BOOL);
+        ss << ", hds:" << srs_bool2switch(SRS_HDS_BOOL);
+        ss << ", srt:" << srs_bool2switch(SRS_SRT_BOOL);
         // hc(http callback)
         ss << ", hc:" << srs_bool2switch(true);
         // ha(http api)
@@ -229,11 +258,7 @@ void show_macro_features()
         ss << ", trans:" << srs_bool2switch(true);
         // inge(ingest)
         ss << ", inge:" << srs_bool2switch(true);
-        ss << ", kafka:" << srs_bool2switch(SRS_AUTO_KAFKA_BOOL);
         ss << ", stat:" << srs_bool2switch(true);
-        ss << ", nginx:" << srs_bool2switch(SRS_AUTO_NGINX_BOOL);
-        // ff(ffmpeg)
-        ss << ", ff:" << srs_bool2switch(SRS_AUTO_FFMPEG_TOOL_BOOL);
         // sc(stream-caster)
         ss << ", sc:" << srs_bool2switch(true);
         srs_trace(ss.str().c_str());
@@ -242,22 +267,6 @@ void show_macro_features()
     if (true) {
         stringstream ss;
         ss << "SRS on ";
-#ifdef SRS_OSX
-        ss << "OSX";
-#endif
-#ifdef SRS_PI
-        ss << "RespberryPi";
-#endif
-#ifdef SRS_CUBIE
-        ss << "CubieBoard";
-#endif
-#ifdef SRS_ARM_UBUNTU12
-        ss << "ARM(build on ubuntu)";
-#endif
-#ifdef SRS_MIPS_UBUNTU12
-        ss << "MIPS(build on ubuntu)";
-#endif
-        
 #if defined(__amd64__)
         ss << " amd64";
 #endif
@@ -270,9 +279,11 @@ void show_macro_features()
 #if defined(__arm__)
         ss << "arm";
 #endif
-        
-#ifndef SRS_OSX
-        ss << ", glibc" << (int)__GLIBC__ << "." <<  (int)__GLIBC_MINOR__;
+#if defined(__aarch64__)
+        ss << " aarch64";
+#endif
+#if defined(SRS_CROSSBUILD)
+        ss << "(crossbuild)";
 #endif
         
         ss << ", conf:" << _srs_config->config() << ", limit:" << _srs_config->get_max_connections()
@@ -286,7 +297,7 @@ void show_macro_features()
         stringstream ss;
         
         // mw(merged-write)
-        ss << "mw sleep:" << SRS_PERF_MW_SLEEP << "ms";
+        ss << "mw sleep:" << srsu2msi(SRS_PERF_MW_SLEEP) << "ms";
         
         // mr(merged-read)
         ss << ". mr ";
@@ -295,7 +306,7 @@ void show_macro_features()
 #else
         ss << "enabled:off";
 #endif
-        ss << ", default:" << SRS_PERF_MR_ENABLED << ", sleep:" << SRS_PERF_MR_SLEEP << "ms";
+        ss << ", default:" << SRS_PERF_MR_ENABLED << ", sleep:" << srsu2msi(SRS_PERF_MR_SLEEP) << "ms";
         
         srs_trace(ss.str().c_str());
     }
@@ -306,7 +317,7 @@ void show_macro_features()
         // gc(gop-cache)
         ss << "gc:" << srs_bool2switch(SRS_PERF_GOP_CACHE);
         // pq(play-queue)
-        ss << ", pq:" << SRS_PERF_PLAY_QUEUE << "s";
+        ss << ", pq:" << srsu2msi(SRS_PERF_PLAY_QUEUE) << "ms";
         // cscc(chunk stream cache cid)
         ss << ", cscc:[0," << SRS_PERF_CHUNK_STREAM_CACHE << ")";
         // csa(complex send algorithm)
@@ -339,19 +350,14 @@ void show_macro_features()
     // others
     int possible_mr_latency = 0;
 #ifdef SRS_PERF_MERGED_READ
-    possible_mr_latency = SRS_PERF_MR_SLEEP;
+    possible_mr_latency = srsu2msi(SRS_PERF_MR_SLEEP);
 #endif
-    srs_trace("system default latency in ms: mw(0-%d) + mr(0-%d) + play-queue(0-%d)",
-              SRS_PERF_MW_SLEEP, possible_mr_latency, SRS_PERF_PLAY_QUEUE*1000);
-    
-#ifdef SRS_AUTO_MEM_WATCH
-#warning "srs memory watcher will hurts performance. user should kill by SIGTERM or init.d script."
-    srs_warn("srs memory watcher will hurts performance. user should kill by SIGTERM or init.d script.");
-#endif
+    srs_trace("system default latency(ms): mw(0-%d) + mr(0-%d) + play-queue(0-%d)",
+              srsu2msi(SRS_PERF_MW_SLEEP), possible_mr_latency, srsu2msi(SRS_PERF_PLAY_QUEUE));
     
 #if VERSION_MAJOR > VERSION_STABLE
-#warning "Current branch is unstable."
-    srs_warn("Develop is unstable, please use branch: git checkout -b %s origin/%s", VERSION_STABLE_BRANCH, VERSION_STABLE_BRANCH);
+    #warning "Current branch is not stable."
+    srs_warn("%s/%s is not stable", RTMP_SIG_SRS_KEY, RTMP_SIG_SRS_VERSION);
 #endif
     
 #if defined(SRS_PERF_SO_SNDBUF_SIZE) && !defined(SRS_PERF_MW_SO_SNDBUF)
@@ -359,39 +365,63 @@ void show_macro_features()
 #endif
 }
 
-string srs_getenv(const char* name)
-{
-    char* cv = ::getenv(name);
-    
-    if (cv) {
-        return cv;
-    }
-    
-    return "";
-}
-
-srs_error_t run(SrsServer* svr)
+// Detect docker by https://stackoverflow.com/a/41559867
+bool _srs_in_docker = false;
+srs_error_t srs_detect_docker()
 {
     srs_error_t err = srs_success;
-    
-    /**
-     * we do nothing in the constructor of server,
-     * and use initialize to create members, set hooks for instance the reload handler,
-     * all initialize will done in this stage.
-     */
-    if ((err = svr->initialize(NULL)) != srs_success) {
-        return srs_error_wrap(err, "server initialize");
+
+    _srs_in_docker = false;
+
+    SrsFileReader fr;
+    if ((err = fr.open("/proc/1/cgroup")) != srs_success) {
+        return err;
+    }
+
+    ssize_t nn;
+    char buf[1024];
+    if ((err = fr.read(buf, sizeof(buf), &nn)) != srs_success) {
+        return err;
+    }
+
+    if (nn <= 0) {
+        return err;
+    }
+
+    string s(buf, nn);
+    if (srs_string_contains(s, "/docker")) {
+        _srs_in_docker = true;
+    }
+
+    return err;
+}
+
+srs_error_t run_directly_or_daemon()
+{
+    srs_error_t err = srs_success;
+
+    // Ignore any error while detecting docker.
+    if ((err = srs_detect_docker()) != srs_success) {
+        srs_error_reset(err);
+    }
+
+    // Load daemon from config, disable it for docker.
+    // @see https://github.com/ossrs/srs/issues/1594
+    bool run_as_daemon = _srs_config->get_daemon();
+    if (run_as_daemon && _srs_in_docker && _srs_config->disable_daemon_for_docker()) {
+        srs_warn("disable daemon for docker");
+        run_as_daemon = false;
     }
     
-    // if not deamon, directly run master.
-    if (!_srs_config->get_deamon()) {
-        if ((err = run_master(svr)) != srs_success) {
-            return srs_error_wrap(err, "run master");
+    // If not daemon, directly run hybrid server.
+    if (!run_as_daemon) {
+        if ((err = run_hybrid_server()) != srs_success) {
+            return srs_error_wrap(err, "run hybrid");
         }
         return srs_success;
     }
     
-    srs_trace("start deamon mode...");
+    srs_trace("start daemon mode...");
     
     int pid = fork();
     
@@ -420,51 +450,43 @@ srs_error_t run(SrsServer* svr)
     }
     
     // son
-    srs_trace("son(deamon) process running.");
+    srs_trace("son(daemon) process running.");
     
-    if ((err = run_master(svr)) != srs_success) {
-        return srs_error_wrap(err, "daemon run master");
+    if ((err = run_hybrid_server()) != srs_success) {
+        return srs_error_wrap(err, "daemon run hybrid");
     }
     
     return err;
 }
 
-srs_error_t run_master(SrsServer* svr)
+srs_error_t run_hybrid_server()
 {
     srs_error_t err = srs_success;
-    
-    if ((err = svr->initialize_st()) != srs_success) {
-        return srs_error_wrap(err, "initialize st");
+
+    // Create servers and register them.
+    _srs_hybrid->register_server(new SrsServerAdapter());
+
+#ifdef SRS_SRT
+    _srs_hybrid->register_server(new SrtServerAdapter());
+#endif
+
+#ifdef SRS_RTC
+    _srs_hybrid->register_server(new RtcServerAdapter());
+#endif
+
+    // Do some system initialize.
+    if ((err = _srs_hybrid->initialize()) != srs_success) {
+        return srs_error_wrap(err, "hybrid initialize");
     }
-    
-    if ((err = svr->initialize_signal()) != srs_success) {
-        return srs_error_wrap(err, "initialize signal");
+
+    // Should run util hybrid servers all done.
+    if ((err = _srs_hybrid->run()) != srs_success) {
+        return srs_error_wrap(err, "hybrid run");
     }
-    
-    if ((err = svr->acquire_pid_file()) != srs_success) {
-        return srs_error_wrap(err, "acquire pid file");
-    }
-    
-    if ((err = svr->listen()) != srs_success) {
-        return srs_error_wrap(err, "listen");
-    }
-    
-    if ((err = svr->register_signal()) != srs_success) {
-        return srs_error_wrap(err, "register signal");
-    }
-    
-    if ((err = svr->http_handle()) != srs_success) {
-        return srs_error_wrap(err, "http handle");
-    }
-    
-    if ((err = svr->ingest()) != srs_success) {
-        return srs_error_wrap(err, "ingest");
-    }
-    
-    if ((err = svr->cycle()) != srs_success) {
-        return srs_error_wrap(err, "main cycle");
-    }
-    
+
+    // After all done, stop and cleanup.
+    _srs_hybrid->stop();
+
     return err;
 }
 

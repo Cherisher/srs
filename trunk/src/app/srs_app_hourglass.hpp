@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -26,70 +26,79 @@
 
 #include <srs_core.hpp>
 
-#include <map>
+#include <srs_app_st.hpp>
 
-/**
- * the handler for the tick.
- */
+#include <map>
+#include <string>
+
+class SrsCoroutine;
+
+// The handler for the tick.
 class ISrsHourGlass
 {
 public:
     ISrsHourGlass();
     virtual ~ISrsHourGlass();
 public:
-    /**
-     * notify the handler, the type and tick.
-     */
-    virtual srs_error_t notify(int type, int interval, int64_t tick) = 0;
+    // When time is ticked, this function is called.
+    virtual srs_error_t notify(int event, srs_utime_t interval, srs_utime_t tick) = 0;
 };
 
-/**
- * the hourglass used to do some specieal task,
- * while these task is cycle when some interval, for example,
- * there are N=3 tasks to do:
- *          1. heartbeat every 3s.
- *          2. print message every 5s.
- *          3. notify backend every 7s.
- * the hourglass will call back when ticks:
- *          1. notify(type=1, time=3)
- *          2. notify(type=2, time=5)
- *          3. notify(type=1, time=6)
- *          4. notify(type=3, time=7)
- *          5. notify(type=1, time=9)
- *          6. notify(type=2, time=10)
- * this is used for server and bocar server and other manager.
- *
- * Usage:
- *      SrsHourGlass* hg = new SrsHourGlass(handler, 1000);
- *      hg->tick(1, 3000);
- *      hg->tick(2, 5000);
- *      hg->tick(3, 7000);
- *      // create a thread to cycle, which will call handerl when ticked.
- *      while (true) {
- *          hg->cycle();
- *      }
- */
-class SrsHourGlass
+// The hourglass(timer or SrsTimer) for special tasks,
+// while these tasks are attached to some intervals, for example,
+// there are N=3 tasks bellow:
+//          1. A heartbeat every 3s.
+//          2. A print message every 5s.
+//          3. A notify backend every 7s.
+// The hourglass will call back when ticks:
+//          1. Got notify(event=1, time=3)
+//          2. Got notify(event=2, time=5)
+//          3. Got notify(event=1, time=6)
+//          4. Got notify(event=3, time=7)
+//          5. Got notify(event=1, time=9)
+//          6. Got notify(event=2, time=10)
+// It's a complex and high-performance timer.
+//
+// Usage:
+//      SrsHourGlass* hg = new SrsHourGlass("nack", handler, 100 * SRS_UTIME_MILLISECONDS);
+//
+//      hg->tick(1, 300 * SRS_UTIME_MILLISECONDS);
+//      hg->tick(2, 500 * SRS_UTIME_MILLISECONDS);
+//      hg->tick(3, 700 * SRS_UTIME_MILLISECONDS);
+//
+//      // The hg will create a thread for timer.
+//      hg->start();
+class SrsHourGlass : virtual public ISrsCoroutineHandler
 {
 private:
+    std::string label_;
+    SrsCoroutine* trd;
     ISrsHourGlass* handler;
-    int resolution;
-    // key: the type of tick.
-    // value: the interval of tick.
-    std::map<int, int> ticks;
-    // the total elapsed time,
+    srs_utime_t _resolution;
+    // The ticks:
+    //      key: the event of tick.
+    //      value: the interval of tick.
+    std::map<int, srs_utime_t> ticks;
+    // The total elapsed time,
     // for each cycle, we increase it with a resolution.
-    int64_t total_elapse;
+    srs_utime_t total_elapse;
 public:
-    SrsHourGlass(ISrsHourGlass* h, int resolution_ms);
+    // TODO: FIMXE: Refine to SrsHourGlass(std::string label);
+    SrsHourGlass(std::string label, ISrsHourGlass* h, srs_utime_t resolution);
     virtual ~SrsHourGlass();
 public:
-    // add a pair of tick(type, interval).
-    // @param type the type of tick.
-    // @param interval the interval in ms of tick.
-    virtual srs_error_t tick(int type, int interval);
+    // Start or stop the hourglass.
+    virtual srs_error_t start();
+    virtual void stop();
 public:
-    // cycle the hourglass, which will sleep resolution every time.
+    // TODO: FIXME: Refine to tick with handler. Remove the tick(interval).
+    // Add a pair of tick(event, interval).
+    // @param event the event of tick, default is 0.
+    // @param interval the interval in srs_utime_t of tick.
+    virtual srs_error_t tick(srs_utime_t interval);
+    virtual srs_error_t tick(int event, srs_utime_t interval);
+public:
+    // Cycle the hourglass, which will sleep resolution every time.
     // and call handler when ticked.
     virtual srs_error_t cycle();
 };

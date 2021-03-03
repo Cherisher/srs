@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -28,13 +28,13 @@
 
 #include <string>
 
-// for srs-librtmp, @see https://github.com/ossrs/srs/issues/213
+// For srs-librtmp, @see https://github.com/ossrs/srs/issues/213
 #ifndef _WIN32
 #define ERROR_SUCCESS                       0
 #endif
 
 ///////////////////////////////////////////////////////
-// system error.
+// The system error.
 ///////////////////////////////////////////////////////
 #define ERROR_SOCKET_CREATE                 1000
 #define ERROR_SOCKET_SETREUSE               1001
@@ -79,7 +79,7 @@
 #define ERROR_SYSTEM_PID_SET_FILE_INFO      1040
 #define ERROR_SYSTEM_FILE_ALREADY_OPENED    1041
 #define ERROR_SYSTEM_FILE_OPENE             1042
-#define ERROR_SYSTEM_FILE_CLOSE             1043
+//#define ERROR_SYSTEM_FILE_CLOSE             1043
 #define ERROR_SYSTEM_FILE_READ              1044
 #define ERROR_SYSTEM_FILE_WRITE             1045
 #define ERROR_SYSTEM_FILE_EOF               1046
@@ -114,6 +114,10 @@
 #define ERROR_SOCKET_SETKEEPALIVE           1075
 #define ERROR_SOCKET_NO_NODELAY             1076
 #define ERROR_SOCKET_SNDBUF                 1077
+#define ERROR_THREAD_STARTED                1078
+#define ERROR_SOCKET_SETREUSEADDR           1079
+#define ERROR_SOCKET_SETCLOSEEXEC           1080
+#define ERROR_SOCKET_ACCEPT                 1081
 
 ///////////////////////////////////////////////////////
 // RTMP protocol error.
@@ -171,19 +175,22 @@
 #define ERROR_OpenSslCreateHMAC             2050
 #define ERROR_RTMP_STREAM_NAME_EMPTY        2051
 #define ERROR_HTTP_HIJACK                   2052
-//                                           
-// system control message,
-// not an error, but special control logic.
+#define ERROR_RTMP_MESSAGE_CREATE           2053
+#define ERROR_RTMP_PROXY_EXCEED             2054
+#define ERROR_RTMP_CREATE_STREAM_DEPTH      2055
 //
-// connection is redirect to another server.
+// The system control message,
+// It's not an error, but special control logic.
+//
+// When connection is redirect to another server.
 #define ERROR_CONTROL_REDIRECT              2997
-// sys ctl: rtmp close stream, support replay.
+// For sys ctl: rtmp close stream, support replay.
 #define ERROR_CONTROL_RTMP_CLOSE            2998
-// FMLE stop publish and republish.
+// When FMLE stop publish and republish.
 #define ERROR_CONTROL_REPUBLISH             2999
 
 ///////////////////////////////////////////////////////
-// application level
+// The application level errors.
 ///////////////////////////////////////////////////////
 #define ERROR_HLS_METADATA                  3000
 #define ERROR_HLS_DECODE_ERROR              3001
@@ -275,11 +282,16 @@
 #define ERROR_DASH_WRITE_FAILED             3087
 #define ERROR_TS_CONTEXT_NOT_READY          3088
 #define ERROR_MP4_ILLEGAL_MOOF              3089
-#define ERROR_OCLUSTER_DISCOVER             3090
-#define ERROR_OCLUSTER_REDIRECT             3091
+#define ERROR_MP4_ILLEGAL_MDAT              3090
+#define ERROR_OCLUSTER_DISCOVER             3091
+#define ERROR_OCLUSTER_REDIRECT             3092
+#define ERROR_INOTIFY_CREATE                3093
+#define ERROR_INOTIFY_OPENFD                3094
+#define ERROR_INOTIFY_WATCH                 3095
+#define ERROR_HTTP_URL_UNESCAPE             3096
 
 ///////////////////////////////////////////////////////
-// HTTP/StreamCaster/KAFKA protocol error.
+// HTTP/StreamCaster protocol error.
 ///////////////////////////////////////////////////////
 #define ERROR_HTTP_PATTERN_EMPTY            4000
 #define ERROR_HTTP_PATTERN_DUPLICATED       4001
@@ -311,16 +323,75 @@
 #define ERROR_AVC_NALU_UEV                  4027
 #define ERROR_AAC_BYTES_INVALID             4028
 #define ERROR_HTTP_REQUEST_EOF              4029
-#define ERROR_KAFKA_CODEC_STRING            4030
-#define ERROR_KAFKA_CODEC_BYTES             4031
-#define ERROR_KAFKA_CODEC_REQUEST           4032
-#define ERROR_KAFKA_CODEC_RESPONSE          4033
-#define ERROR_KAFKA_CODEC_ARRAY             4034
-#define ERROR_KAFKA_CODEC_METADATA          4035
-#define ERROR_KAFKA_CODEC_MESSAGE           4036
-#define ERROR_KAFKA_CODEC_PRODUCER          4037
 #define ERROR_HTTP_302_INVALID              4038
 #define ERROR_BASE64_DECODE                 4039
+#define ERROR_HTTP_STREAM_EOF               4040
+#define ERROR_HTTPS_NOT_SUPPORTED           4041
+#define ERROR_HTTPS_HANDSHAKE               4042
+#define ERROR_HTTPS_READ                    4043
+#define ERROR_HTTPS_WRITE                   4044
+#define ERROR_HTTPS_KEY_CRT                 4045
+
+///////////////////////////////////////////////////////
+// RTC protocol error.
+///////////////////////////////////////////////////////
+#define ERROR_RTC_PORT                      5000
+#define ERROR_RTP_PACKET_CREATE             5001
+#define ERROR_OpenSslCreateSSL              5002
+#define ERROR_OpenSslBIOReset               5003
+#define ERROR_OpenSslBIOWrite               5004
+#define ERROR_OpenSslBIONew                 5005
+#define ERROR_RTC_RTP                       5006
+#define ERROR_RTC_RTCP                      5007
+#define ERROR_RTC_STUN                      5008
+#define ERROR_RTC_DTLS                      5009
+#define ERROR_RTC_UDP                       5010
+#define ERROR_RTC_RTP_MUXER                 5011
+#define ERROR_RTC_SDP_DECODE                5012
+#define ERROR_RTC_SRTP_INIT                 5013
+#define ERROR_RTC_SRTP_PROTECT              5014
+#define ERROR_RTC_SRTP_UNPROTECT            5015
+#define ERROR_RTC_RTCP_CHECK                5016
+#define ERROR_RTC_SOURCE_CHECK              5017
+#define ERROR_RTC_SDP_EXCHANGE              5018
+#define ERROR_RTC_API_BODY                  5019
+#define ERROR_RTC_SOURCE_BUSY               5020
+#define ERROR_RTC_DISABLED                  5021
+#define ERROR_RTC_NO_SESSION                5022
+#define ERROR_RTC_INVALID_PARAMS            5023
+#define ERROR_RTC_DUMMY_BRIDGER             5024
+#define ERROR_RTC_STREM_STARTED             5025
+#define ERROR_RTC_TRACK_CODEC               5026
+#define ERROR_RTC_NO_PLAYER                 5027
+#define ERROR_RTC_NO_PUBLISHER              5028
+#define ERROR_RTC_DUPLICATED_SSRC           5029
+#define ERROR_RTC_NO_TRACK                  5030
+#define ERROR_RTC_RTCP_EMPTY_RR             5031
+
+///////////////////////////////////////////////////////
+// GB28181 API error.
+///////////////////////////////////////////////////////
+#define ERROR_GB28181_SERVER_NOT_RUN        6000
+#define ERROR_GB28181_SESSION_IS_EXIST      6001
+#define ERROR_GB28181_SESSION_IS_NOTEXIST   6002
+#define ERROR_GB28181_RTP_PORT_FULL         6003
+#define ERROR_GB28181_PORT_MODE_INVALID     6004
+#define ERROR_GB28181_VALUE_EMPTY           6005  
+#define ERROR_GB28181_ACTION_INVALID        6006 
+#define ERROR_GB28181_SIP_NOT_RUN           6007 
+#define ERROR_GB28181_SIP_INVITE_FAILED     6008
+#define ERROR_GB28181_SIP_BYE_FAILED        6009
+#define ERROR_GB28181_SIP_IS_INVITING       6010
+#define ERROR_GB28181_CREATER_RTMPMUXER_FAILED 6011
+#define ERROR_GB28181_SIP_CH_OFFLINE        6012
+#define ERROR_GB28181_SIP_CH_NOTEXIST       6013
+#define ERROR_GB28181_SIP_RAW_DATA_FAILED   6014
+#define ERROR_GB28181_SIP_PRASE_FAILED      6015
+#define ERROR_GB28181_SIP_PTZ_FAILED        6016
+#define ERROR_GB28181_SIP_NOT_INVITE        6017
+#define ERROR_GB28181_SIP_PTZ_CMD_INVALID   6018
+#define ERROR_GB28181_H264_FRAMESIZE        6019
+#define ERROR_GB28181_H264_FRAME_FULL       6020
 
 ///////////////////////////////////////////////////////
 // HTTP API error.
@@ -328,23 +399,24 @@
 //#define ERROR_API_METHOD_NOT_ALLOWD
 
 ///////////////////////////////////////////////////////
-// user-define error.
+// For user-define error.
 ///////////////////////////////////////////////////////
 #define ERROR_USER_START                    9000
 //#define ERROR_USER_DISCONNECT               9001
 #define ERROR_SOURCE_NOT_FOUND              9002
 #define ERROR_USER_END                      9999
 
-/**
- * whether the error code is an system control error.
- */
+// Whether the error code is an system control error.
 // TODO: FIXME: Remove it from underlayer for confused with error and logger.
-extern bool srs_is_system_control_error(int error_code);
 extern bool srs_is_system_control_error(srs_error_t err);
-extern bool srs_is_client_gracefully_close(int error_code);
+// It's closed by client.
 extern bool srs_is_client_gracefully_close(srs_error_t err);
+// It's closed by server, such as streaming EOF.
+extern bool srs_is_server_gracefully_close(srs_error_t err);
 
-// Use complex errors, @read https://github.com/ossrs/srs/issues/913
+// The complex error carries code, message, callstack and instant variables,
+// which is more strong and easy to locate problem by log,
+// please @read https://github.com/ossrs/srs/issues/913
 class SrsCplxError
 {
 private:
@@ -356,31 +428,35 @@ private:
     std::string file;
     int line;
     
-    int cid;
+    SrsContextId cid;
     int rerrno;
     
     std::string desc;
+    std::string _summary;
 private:
     SrsCplxError();
 public:
     virtual ~SrsCplxError();
 private:
     virtual std::string description();
+    virtual std::string summary();
 public:
     static SrsCplxError* create(const char* func, const char* file, int line, int code, const char* fmt, ...);
     static SrsCplxError* wrap(const char* func, const char* file, int line, SrsCplxError* err, const char* fmt, ...);
     static SrsCplxError* success();
     static SrsCplxError* copy(SrsCplxError* from);
     static std::string description(SrsCplxError* err);
+    static std::string summary(SrsCplxError* err);
     static int error_code(SrsCplxError* err);
 };
 
 // Error helpers, should use these functions to new or wrap an error.
-#define srs_success SrsCplxError::success()
+#define srs_success 0 // SrsCplxError::success()
 #define srs_error_new(ret, fmt, ...) SrsCplxError::create(__FUNCTION__, __FILE__, __LINE__, ret, fmt, ##__VA_ARGS__)
 #define srs_error_wrap(err, fmt, ...) SrsCplxError::wrap(__FUNCTION__, __FILE__, __LINE__, err, fmt, ##__VA_ARGS__)
 #define srs_error_copy(err) SrsCplxError::copy(err)
 #define srs_error_desc(err) SrsCplxError::description(err)
+#define srs_error_summary(err) SrsCplxError::summary(err)
 #define srs_error_code(err) SrsCplxError::error_code(err)
 #define srs_error_reset(err) srs_freep(err); err = srs_success
 

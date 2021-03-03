@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -23,8 +23,6 @@
 
 #include <srs_kernel_log.hpp>
 
-#include <srs_kernel_error.hpp>
-
 ISrsLog::ISrsLog()
 {
 }
@@ -33,56 +31,12 @@ ISrsLog::~ISrsLog()
 {
 }
 
-srs_error_t ISrsLog::initialize()
-{
-    return srs_success;
-}
-
-void ISrsLog::reopen()
+ISrsContext::ISrsContext()
 {
 }
 
-void ISrsLog::verbose(const char* /*tag*/, int /*context_id*/, const char* /*fmt*/, ...)
+ISrsContext::~ISrsContext()
 {
-}
-
-void ISrsLog::info(const char* /*tag*/, int /*context_id*/, const char* /*fmt*/, ...)
-{
-}
-
-void ISrsLog::trace(const char* /*tag*/, int /*context_id*/, const char* /*fmt*/, ...)
-{
-}
-
-void ISrsLog::warn(const char* /*tag*/, int /*context_id*/, const char* /*fmt*/, ...)
-{
-}
-
-void ISrsLog::error(const char* /*tag*/, int /*context_id*/, const char* /*fmt*/, ...)
-{
-}
-
-ISrsThreadContext::ISrsThreadContext()
-{
-}
-
-ISrsThreadContext::~ISrsThreadContext()
-{
-}
-
-int ISrsThreadContext::generate_id()
-{
-    return 0;
-}
-
-int ISrsThreadContext::get_id()
-{
-    return 0;
-}
-
-int ISrsThreadContext::set_id(int /*v*/)
-{
-    return 0;
 }
 
 

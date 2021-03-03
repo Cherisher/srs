@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -35,14 +35,17 @@ using namespace std;
 #include <srs_kernel_utility.hpp>
 #include <srs_protocol_amf0.hpp>
 
-int64_t srs_gvid = 0;
-
-int64_t srs_generate_id()
+string srs_generate_id()
 {
+    static int64_t srs_gvid = 0;
+
     if (srs_gvid == 0) {
-        srs_gvid = getpid() * 3;
+        srs_gvid = getpid();
     }
-    return srs_gvid++;
+
+    string prefix = "vid";
+    string rand_id = srs_int2str(srs_get_system_time() % 1000);
+    return prefix + "-" + srs_int2str(srs_gvid++) + "-" + rand_id;
 }
 
 SrsStatisticVhost::SrsStatisticVhost()
@@ -71,7 +74,7 @@ srs_error_t SrsStatisticVhost::dumps(SrsJsonObject* obj)
     bool hls_enabled = _srs_config->get_hls_enabled(vhost);
     bool enabled = _srs_config->get_vhost_enabled(vhost);
     
-    obj->set("id", SrsJsonAny::integer(id));
+    obj->set("id", SrsJsonAny::str(id.c_str()));
     obj->set("name", SrsJsonAny::str(vhost.c_str()));
     obj->set("enabled", SrsJsonAny::boolean(enabled));
     obj->set("clients", SrsJsonAny::integer(nb_clients));
@@ -90,7 +93,7 @@ srs_error_t SrsStatisticVhost::dumps(SrsJsonObject* obj)
     
     hls->set("enabled", SrsJsonAny::boolean(hls_enabled));
     if (hls_enabled) {
-        hls->set("fragment", SrsJsonAny::number(_srs_config->get_hls_fragment(vhost)));
+        hls->set("fragment", SrsJsonAny::number(srsu2msi(_srs_config->get_hls_fragment(vhost))/1000.0));
     }
     
     return err;
@@ -101,8 +104,7 @@ SrsStatisticStream::SrsStatisticStream()
     id = srs_generate_id();
     vhost = NULL;
     active = false;
-    connection_cid = -1;
-    
+
     has_video = false;
     vcodec = SrsVideoCodecIdReserved;
     avc_profile = SrsAvcProfileReserved;
@@ -134,11 +136,11 @@ srs_error_t SrsStatisticStream::dumps(SrsJsonObject* obj)
 {
     srs_error_t err = srs_success;
     
-    obj->set("id", SrsJsonAny::integer(id));
+    obj->set("id", SrsJsonAny::str(id.c_str()));
     obj->set("name", SrsJsonAny::str(stream.c_str()));
-    obj->set("vhost", SrsJsonAny::integer(vhost->id));
+    obj->set("vhost", SrsJsonAny::str(vhost->id.c_str()));
     obj->set("app", SrsJsonAny::str(app.c_str()));
-    obj->set("live_ms", SrsJsonAny::integer(srs_get_system_time_ms()));
+    obj->set("live_ms", SrsJsonAny::integer(srsu2ms(srs_get_system_time())));
     obj->set("clients", SrsJsonAny::integer(nb_clients));
     obj->set("frames", SrsJsonAny::integer(nb_frames));
     obj->set("send_bytes", SrsJsonAny::integer(kbps->get_send_bytes()));
@@ -154,7 +156,7 @@ srs_error_t SrsStatisticStream::dumps(SrsJsonObject* obj)
     obj->set("publish", publish);
     
     publish->set("active", SrsJsonAny::boolean(active));
-    publish->set("cid", SrsJsonAny::integer(connection_cid));
+    publish->set("cid", SrsJsonAny::str(connection_cid.c_str()));
     
     if (!has_video) {
         obj->set("video", SrsJsonAny::null());
@@ -184,7 +186,7 @@ srs_error_t SrsStatisticStream::dumps(SrsJsonObject* obj)
     return err;
 }
 
-void SrsStatisticStream::publish(int cid)
+void SrsStatisticStream::publish(SrsContextId cid)
 {
     connection_cid = cid;
     active = true;
@@ -203,12 +205,11 @@ void SrsStatisticStream::close()
 
 SrsStatisticClient::SrsStatisticClient()
 {
-    id = 0;
     stream = NULL;
     conn = NULL;
     req = NULL;
     type = SrsRtmpConnUnknown;
-    create = srs_get_system_time_ms();
+    create = srs_get_system_time();
 }
 
 SrsStatisticClient::~SrsStatisticClient()
@@ -219,9 +220,9 @@ srs_error_t SrsStatisticClient::dumps(SrsJsonObject* obj)
 {
     srs_error_t err = srs_success;
     
-    obj->set("id", SrsJsonAny::integer(id));
-    obj->set("vhost", SrsJsonAny::integer(stream->vhost->id));
-    obj->set("stream", SrsJsonAny::integer(stream->id));
+    obj->set("id", SrsJsonAny::str(id.c_str()));
+    obj->set("vhost", SrsJsonAny::str(stream->vhost->id.c_str()));
+    obj->set("stream", SrsJsonAny::str(stream->id.c_str()));
     obj->set("ip", SrsJsonAny::str(req->ip.c_str()));
     obj->set("pageUrl", SrsJsonAny::str(req->pageUrl.c_str()));
     obj->set("swfUrl", SrsJsonAny::str(req->swfUrl.c_str()));
@@ -229,9 +230,30 @@ srs_error_t SrsStatisticClient::dumps(SrsJsonObject* obj)
     obj->set("url", SrsJsonAny::str(req->get_stream_url().c_str()));
     obj->set("type", SrsJsonAny::str(srs_client_type_string(type).c_str()));
     obj->set("publish", SrsJsonAny::boolean(srs_client_type_is_publish(type)));
-    obj->set("alive", SrsJsonAny::number((srs_get_system_time_ms() - create) / 1000.0));
+    obj->set("alive", SrsJsonAny::number(srsu2ms(srs_get_system_time() - create) / 1000.0));
     
     return err;
+}
+
+SrsStatisticCategory::SrsStatisticCategory()
+{
+    nn = 0;
+
+    a = 0;
+    b = 0;
+    c = 0;
+    d = 0;
+    e = 0;
+
+    f = 0;
+    g = 0;
+    h = 0;
+    i = 0;
+    j = 0;
+}
+
+SrsStatisticCategory::~SrsStatisticCategory()
+{
 }
 
 SrsStatistic* SrsStatistic::_instance = NULL;
@@ -243,6 +265,12 @@ SrsStatistic::SrsStatistic()
     clk = new SrsWallClock();
     kbps = new SrsKbps(clk);
     kbps->set_io(NULL, NULL);
+
+    perf_iovs = new SrsStatisticCategory();
+    perf_msgs = new SrsStatisticCategory();
+    perf_rtp = new SrsStatisticCategory();
+    perf_rtc = new SrsStatisticCategory();
+    perf_bytes = new SrsStatisticCategory();
 }
 
 SrsStatistic::~SrsStatistic()
@@ -251,21 +279,21 @@ SrsStatistic::~SrsStatistic()
     srs_freep(clk);
     
     if (true) {
-        std::map<int64_t, SrsStatisticVhost*>::iterator it;
+        std::map<std::string, SrsStatisticVhost*>::iterator it;
         for (it = vhosts.begin(); it != vhosts.end(); it++) {
             SrsStatisticVhost* vhost = it->second;
             srs_freep(vhost);
         }
     }
     if (true) {
-        std::map<int64_t, SrsStatisticStream*>::iterator it;
+        std::map<std::string, SrsStatisticStream*>::iterator it;
         for (it = streams.begin(); it != streams.end(); it++) {
             SrsStatisticStream* stream = it->second;
             srs_freep(stream);
         }
     }
     if (true) {
-        std::map<int, SrsStatisticClient*>::iterator it;
+        std::map<std::string, SrsStatisticClient*>::iterator it;
         for (it = clients.begin(); it != clients.end(); it++) {
             SrsStatisticClient* client = it->second;
             srs_freep(client);
@@ -276,6 +304,12 @@ SrsStatistic::~SrsStatistic()
     rvhosts.clear();
     streams.clear();
     rstreams.clear();
+
+    srs_freep(perf_iovs);
+    srs_freep(perf_msgs);
+    srs_freep(perf_rtp);
+    srs_freep(perf_rtc);
+    srs_freep(perf_bytes);
 }
 
 SrsStatistic* SrsStatistic::instance()
@@ -286,21 +320,21 @@ SrsStatistic* SrsStatistic::instance()
     return _instance;
 }
 
-SrsStatisticVhost* SrsStatistic::find_vhost(int vid)
+SrsStatisticVhost* SrsStatistic::find_vhost_by_id(std::string vid)
 {
-    std::map<int64_t, SrsStatisticVhost*>::iterator it;
+    std::map<string, SrsStatisticVhost*>::iterator it;
     if ((it = vhosts.find(vid)) != vhosts.end()) {
         return it->second;
     }
     return NULL;
 }
 
-SrsStatisticVhost* SrsStatistic::find_vhost(string name)
+SrsStatisticVhost* SrsStatistic::find_vhost_by_name(string name)
 {
     if (rvhosts.empty()) {
         return NULL;
     }
-    
+
     std::map<string, SrsStatisticVhost*>::iterator it;
     if ((it = rvhosts.find(name)) != rvhosts.end()) {
         return it->second;
@@ -308,19 +342,19 @@ SrsStatisticVhost* SrsStatistic::find_vhost(string name)
     return NULL;
 }
 
-SrsStatisticStream* SrsStatistic::find_stream(int sid)
+SrsStatisticStream* SrsStatistic::find_stream(string sid)
 {
-    std::map<int64_t, SrsStatisticStream*>::iterator it;
+    std::map<std::string, SrsStatisticStream*>::iterator it;
     if ((it = streams.find(sid)) != streams.end()) {
         return it->second;
     }
     return NULL;
 }
 
-SrsStatisticClient* SrsStatistic::find_client(int cid)
+SrsStatisticClient* SrsStatistic::find_client(string client_id)
 {
-    std::map<int, SrsStatisticClient*>::iterator it;
-    if ((it = clients.find(cid)) != clients.end()) {
+    std::map<std::string, SrsStatisticClient*>::iterator it;
+    if ((it = clients.find(client_id)) != clients.end()) {
         return it->second;
     }
     return NULL;
@@ -372,7 +406,7 @@ srs_error_t SrsStatistic::on_video_frames(SrsRequest* req, int nb_frames)
     return err;
 }
 
-void SrsStatistic::on_stream_publish(SrsRequest* req, int cid)
+void SrsStatistic::on_stream_publish(SrsRequest* req, SrsContextId cid)
 {
     SrsStatisticVhost* vhost = create_vhost(req);
     SrsStatisticStream* stream = create_stream(vhost, req);
@@ -388,7 +422,7 @@ void SrsStatistic::on_stream_close(SrsRequest* req)
     
     // TODO: FIXME: Should fix https://github.com/ossrs/srs/issues/803
     if (true) {
-        std::map<int64_t, SrsStatisticStream*>::iterator it;
+        std::map<std::string, SrsStatisticStream*>::iterator it;
         if ((it=streams.find(stream->id)) != streams.end()) {
             streams.erase(it);
         }
@@ -397,16 +431,19 @@ void SrsStatistic::on_stream_close(SrsRequest* req)
     // TODO: FIXME: Should fix https://github.com/ossrs/srs/issues/803
     if (true) {
         std::map<std::string, SrsStatisticStream*>::iterator it;
-        if ((it=rstreams.find(stream->url)) != rstreams.end()) {
+        if ((it = rstreams.find(stream->url)) != rstreams.end()) {
             rstreams.erase(it);
         }
     }
 }
 
-srs_error_t SrsStatistic::on_client(int id, SrsRequest* req, SrsConnection* conn, SrsRtmpConnType type)
+srs_error_t SrsStatistic::on_client(SrsContextId cid, SrsRequest* req, ISrsExpire* conn, SrsRtmpConnType type)
 {
     srs_error_t err = srs_success;
-    
+
+    // TODO: FIXME: We should use UUID for client ID.
+    std::string id = cid.c_str();
+
     SrsStatisticVhost* vhost = create_vhost(req);
     SrsStatisticStream* stream = create_stream(vhost, req);
     
@@ -431,9 +468,12 @@ srs_error_t SrsStatistic::on_client(int id, SrsRequest* req, SrsConnection* conn
     return err;
 }
 
-void SrsStatistic::on_disconnect(int id)
+void SrsStatistic::on_disconnect(const SrsContextId& cid)
 {
-    std::map<int, SrsStatisticClient*>::iterator it;
+    // TODO: FIXME: We should use UUID for client ID.
+    std::string id = cid.c_str();
+
+    std::map<std::string, SrsStatisticClient*>::iterator it;
     if ((it = clients.find(id)) == clients.end()) {
         return;
     }
@@ -449,9 +489,10 @@ void SrsStatistic::on_disconnect(int id)
     vhost->nb_clients--;
 }
 
-void SrsStatistic::kbps_add_delta(SrsConnection* conn)
+void SrsStatistic::kbps_add_delta(const SrsContextId& cid, ISrsKbpsDelta* delta)
 {
-    int id = conn->srs_id();
+    // TODO: FIXME: Should not use context id as connection id.
+    std::string id = cid.c_str();
     if (clients.find(id) == clients.end()) {
         return;
     }
@@ -460,7 +501,7 @@ void SrsStatistic::kbps_add_delta(SrsConnection* conn)
     
     // resample the kbps to collect the delta.
     int64_t in, out;
-    conn->remark(&in, &out);
+    delta->remark(&in, &out);
     
     // add delta of connection to kbps.
     // for next sample() of server kbps can get the stat.
@@ -473,14 +514,14 @@ SrsKbps* SrsStatistic::kbps_sample()
 {
     kbps->sample();
     if (true) {
-        std::map<int64_t, SrsStatisticVhost*>::iterator it;
+        std::map<std::string, SrsStatisticVhost*>::iterator it;
         for (it = vhosts.begin(); it != vhosts.end(); it++) {
             SrsStatisticVhost* vhost = it->second;
             vhost->kbps->sample();
         }
     }
     if (true) {
-        std::map<int64_t, SrsStatisticStream*>::iterator it;
+        std::map<std::string, SrsStatisticStream*>::iterator it;
         for (it = streams.begin(); it != streams.end(); it++) {
             SrsStatisticStream* stream = it->second;
             stream->kbps->sample();
@@ -490,7 +531,7 @@ SrsKbps* SrsStatistic::kbps_sample()
     return kbps;
 }
 
-int64_t SrsStatistic::server_id()
+std::string SrsStatistic::server_id()
 {
     return _server_id;
 }
@@ -499,7 +540,7 @@ srs_error_t SrsStatistic::dumps_vhosts(SrsJsonArray* arr)
 {
     srs_error_t err = srs_success;
     
-    std::map<int64_t, SrsStatisticVhost*>::iterator it;
+    std::map<std::string, SrsStatisticVhost*>::iterator it;
     for (it = vhosts.begin(); it != vhosts.end(); it++) {
         SrsStatisticVhost* vhost = it->second;
         
@@ -518,7 +559,7 @@ srs_error_t SrsStatistic::dumps_streams(SrsJsonArray* arr)
 {
     srs_error_t err = srs_success;
     
-    std::map<int64_t, SrsStatisticStream*>::iterator it;
+    std::map<std::string, SrsStatisticStream*>::iterator it;
     for (it = streams.begin(); it != streams.end(); it++) {
         SrsStatisticStream* stream = it->second;
         
@@ -537,7 +578,7 @@ srs_error_t SrsStatistic::dumps_clients(SrsJsonArray* arr, int start, int count)
 {
     srs_error_t err = srs_success;
     
-    std::map<int, SrsStatisticClient*>::iterator it = clients.begin();
+    std::map<std::string, SrsStatisticClient*>::iterator it = clients.begin();
     for (int i = 0; i < start + count && it != clients.end(); it++, i++) {
         if (i < start) {
             continue;
@@ -553,6 +594,157 @@ srs_error_t SrsStatistic::dumps_clients(SrsJsonArray* arr, int start, int count)
         }
     }
     
+    return err;
+}
+
+void SrsStatistic::perf_on_msgs(int nb_msgs)
+{
+    perf_on_packets(perf_msgs, nb_msgs);
+}
+
+srs_error_t SrsStatistic::dumps_perf_msgs(SrsJsonObject* obj)
+{
+    return dumps_perf(perf_msgs, obj);
+}
+
+void SrsStatistic::perf_on_rtc_packets(int nb_packets)
+{
+    perf_on_packets(perf_rtc, nb_packets);
+}
+
+srs_error_t SrsStatistic::dumps_perf_rtc_packets(SrsJsonObject* obj)
+{
+    return dumps_perf(perf_rtc, obj);
+}
+
+void SrsStatistic::perf_on_rtp_packets(int nb_packets)
+{
+    perf_on_packets(perf_rtp, nb_packets);
+}
+
+srs_error_t SrsStatistic::dumps_perf_rtp_packets(SrsJsonObject* obj)
+{
+    return dumps_perf(perf_rtp, obj);
+}
+
+void SrsStatistic::perf_on_writev_iovs(int nb_iovs)
+{
+    perf_on_packets(perf_iovs, nb_iovs);
+}
+
+srs_error_t SrsStatistic::dumps_perf_writev_iovs(SrsJsonObject* obj)
+{
+    return dumps_perf(perf_iovs, obj);
+}
+
+void SrsStatistic::perf_on_rtc_bytes(int nn_bytes, int nn_rtp_bytes, int nn_padding)
+{
+    // a: AVFrame bytes.
+    // b: RTC bytes.
+    // c: RTC paddings.
+    perf_bytes->a += nn_bytes;
+    perf_bytes->b += nn_rtp_bytes;
+    perf_bytes->c += nn_padding;
+
+    perf_bytes->nn += nn_rtp_bytes;
+}
+
+srs_error_t SrsStatistic::dumps_perf_bytes(SrsJsonObject* obj)
+{
+    obj->set("avframe_bytes", SrsJsonAny::integer(perf_bytes->a));
+    obj->set("rtc_bytes", SrsJsonAny::integer(perf_bytes->b));
+    obj->set("rtc_padding", SrsJsonAny::integer(perf_bytes->c));
+
+    obj->set("nn",  SrsJsonAny::integer(perf_bytes->nn));
+
+    return srs_success;
+}
+
+void SrsStatistic::reset_perf()
+{
+    srs_freep(perf_iovs);
+    srs_freep(perf_msgs);
+    srs_freep(perf_rtp);
+    srs_freep(perf_rtc);
+    srs_freep(perf_bytes);
+
+    perf_iovs = new SrsStatisticCategory();
+    perf_msgs = new SrsStatisticCategory();
+    perf_rtp = new SrsStatisticCategory();
+    perf_rtc = new SrsStatisticCategory();
+    perf_bytes = new SrsStatisticCategory();
+}
+
+void SrsStatistic::perf_on_packets(SrsStatisticCategory* p, int nb_msgs)
+{
+    // The range for stat:
+    //      2, 3, 5, 9, 16, 32, 64, 128, 256
+    // that is:
+    //      a: <2
+    //      b: <3
+    //      c: <5
+    //      d: <9
+    //      e: <16
+    //      f: <32
+    //      g: <64
+    //      h: <128
+    //      i: <256
+    //      j: >=256
+    if (nb_msgs < 2) {
+        p->a++;
+    } else if (nb_msgs < 3) {
+        p->b++;
+    } else if (nb_msgs < 5) {
+        p->c++;
+    } else if (nb_msgs < 9) {
+        p->d++;
+    } else if (nb_msgs < 16) {
+        p->e++;
+    } else if (nb_msgs < 32) {
+        p->f++;
+    } else if (nb_msgs < 64) {
+        p->g++;
+    } else if (nb_msgs < 128) {
+        p->h++;
+    } else if (nb_msgs < 256) {
+        p->i++;
+    } else {
+        p->j++;
+    }
+
+    p->nn += nb_msgs;
+}
+
+srs_error_t SrsStatistic::dumps_perf(SrsStatisticCategory* p, SrsJsonObject* obj)
+{
+    srs_error_t err = srs_success;
+
+    // The range for stat:
+    //      2, 3, 5, 9, 16, 32, 64, 128, 256
+    // that is:
+    //      a: <2
+    //      b: <3
+    //      c: <5
+    //      d: <9
+    //      e: <16
+    //      f: <32
+    //      g: <64
+    //      h: <128
+    //      i: <256
+    //      j: >=256
+    if (p->a) obj->set("lt_2",    SrsJsonAny::integer(p->a));
+    if (p->b) obj->set("lt_3",    SrsJsonAny::integer(p->b));
+    if (p->c) obj->set("lt_5",    SrsJsonAny::integer(p->c));
+    if (p->d) obj->set("lt_9",    SrsJsonAny::integer(p->d));
+    if (p->e) obj->set("lt_16",   SrsJsonAny::integer(p->e));
+    if (p->f) obj->set("lt_32",   SrsJsonAny::integer(p->f));
+    if (p->g) obj->set("lt_64",   SrsJsonAny::integer(p->g));
+    if (p->h) obj->set("lt_128",  SrsJsonAny::integer(p->h));
+    if (p->i) obj->set("lt_256",  SrsJsonAny::integer(p->i));
+    if (p->j) obj->set("gt_256",  SrsJsonAny::integer(p->j));
+
+    obj->set("nn",  SrsJsonAny::integer(p->nn));
+
     return err;
 }
 

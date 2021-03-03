@@ -101,7 +101,6 @@
     <ClInclude Include="..\..\src\app\srs_app_utility.hpp" />
     <ClInclude Include="..\..\src\core\srs_core.hpp" />
     <ClInclude Include="..\..\src\core\srs_core_autofree.hpp" />
-    <ClInclude Include="..\..\src\core\srs_core_mem_watch.hpp" />
     <ClInclude Include="..\..\src\core\srs_core_performance.hpp" />
     <ClInclude Include="..\..\src\kernel\srs_kernel_aac.hpp" />
     <ClInclude Include="..\..\src\kernel\srs_kernel_avc.hpp" />
@@ -116,9 +115,6 @@
     <ClInclude Include="..\..\src\kernel\srs_kernel_buffer.hpp" />
     <ClInclude Include="..\..\src\kernel\srs_kernel_ts.hpp" />
     <ClInclude Include="..\..\src\kernel\srs_kernel_utility.hpp" />
-    <ClInclude Include="..\..\src\libs\srs_librtmp.hpp" />
-    <ClInclude Include="..\..\src\libs\srs_lib_bandwidth.hpp" />
-    <ClInclude Include="..\..\src\libs\srs_lib_simple_socket.hpp" />
     <ClInclude Include="..\..\src\protocol\srs_http_stack.hpp" />
     <ClInclude Include="..\..\src\protocol\srs_raw_avc.hpp" />
     <ClInclude Include="..\..\src\protocol\srs_protocol_amf0.hpp" />
@@ -132,19 +128,6 @@
     <ClInclude Include="..\..\src\protocol\srs_protocol_kbps.hpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\research\hls\ts_info.cc" />
-    <ClCompile Include="..\..\research\librtmp\srs_aac_raw_publish.c" />
-    <ClCompile Include="..\..\research\librtmp\srs_audio_raw_publish.c" />
-    <ClCompile Include="..\..\research\librtmp\srs_bandwidth_check.c" />
-    <ClCompile Include="..\..\research\librtmp\srs_detect_rtmp.c" />
-    <ClCompile Include="..\..\research\librtmp\srs_flv_injecter.c" />
-    <ClCompile Include="..\..\research\librtmp\srs_flv_parser.c" />
-    <ClCompile Include="..\..\research\librtmp\srs_h264_raw_publish.c" />
-    <ClCompile Include="..\..\research\librtmp\srs_ingest_flv.c" />
-    <ClCompile Include="..\..\research\librtmp\srs_ingest_rtmp.c" />
-    <ClCompile Include="..\..\research\librtmp\srs_play.c" />
-    <ClCompile Include="..\..\research\librtmp\srs_publish.c" />
-    <ClCompile Include="..\..\research\librtmp\srs_rtmp_dump.c" />
     <ClCompile Include="..\..\src\app\srs_app_bandwidth.cpp" />
     <ClCompile Include="..\..\src\app\srs_app_config.cpp" />
     <ClCompile Include="..\..\src\app\srs_app_conn.cpp" />
@@ -183,7 +166,6 @@
     <ClCompile Include="..\..\src\app\srs_app_utility.cpp" />
     <ClCompile Include="..\..\src\core\srs_core.cpp" />
     <ClCompile Include="..\..\src\core\srs_core_autofree.cpp" />
-    <ClCompile Include="..\..\src\core\srs_core_mem_watch.cpp" />
     <ClCompile Include="..\..\src\core\srs_core_performance.cpp" />
     <ClCompile Include="..\..\src\kernel\srs_kernel_aac.cpp" />
     <ClCompile Include="..\..\src\kernel\srs_kernel_avc.cpp" />
@@ -198,9 +180,6 @@
     <ClCompile Include="..\..\src\kernel\srs_kernel_buffer.cpp" />
     <ClCompile Include="..\..\src\kernel\srs_kernel_ts.cpp" />
     <ClCompile Include="..\..\src\kernel\srs_kernel_utility.cpp" />
-    <ClCompile Include="..\..\src\libs\srs_librtmp.cpp" />
-    <ClCompile Include="..\..\src\libs\srs_lib_bandwidth.cpp" />
-    <ClCompile Include="..\..\src\libs\srs_lib_simple_socket.cpp" />
     <ClCompile Include="..\..\src\main\srs_main_server.cpp" />
     <ClCompile Include="..\..\src\protocol\srs_http_stack.cpp" />
     <ClCompile Include="..\..\src\protocol\srs_raw_avc.cpp" />

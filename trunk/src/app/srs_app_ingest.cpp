@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -38,6 +38,7 @@ using namespace std;
 SrsIngesterFFMPEG::SrsIngesterFFMPEG()
 {
     ffmpeg = NULL;
+    starttime = 0;
 }
 
 SrsIngesterFFMPEG::~SrsIngesterFFMPEG()
@@ -52,7 +53,7 @@ srs_error_t SrsIngesterFFMPEG::initialize(SrsFFMPEG* ff, string v, string i)
     ffmpeg = ff;
     vhost = v;
     id = i;
-    starttime = srs_get_system_time_ms();
+    starttime = srs_get_system_time();
     
     return err;
 }
@@ -62,9 +63,9 @@ string SrsIngesterFFMPEG::uri()
     return vhost + "/" + id;
 }
 
-int SrsIngesterFFMPEG::alive()
+srs_utime_t SrsIngesterFFMPEG::alive()
 {
-    return (int)(srs_get_system_time_ms() - starttime);
+    return srs_get_system_time() - starttime;
 }
 
 bool SrsIngesterFFMPEG::equals(string v)
@@ -97,11 +98,17 @@ void SrsIngesterFFMPEG::fast_stop()
     ffmpeg->fast_stop();
 }
 
+void SrsIngesterFFMPEG::fast_kill()
+{
+    ffmpeg->fast_kill();
+}
+
 SrsIngester::SrsIngester()
 {
     _srs_config->subscribe(this);
     
     expired = false;
+    disposed = false;
     
     trd = new SrsDummyCoroutine();
     pprint = SrsPithyPrint::create_ingester();
@@ -117,11 +124,18 @@ SrsIngester::~SrsIngester()
 
 void SrsIngester::dispose()
 {
+    if (disposed) {
+        return;
+    }
+    disposed = true;
+
     // first, use fast stop to notice all FFMPEG to quit gracefully.
     fast_stop();
+
+    srs_usleep(100 * SRS_UTIME_MILLISECONDS);
     
-    // then, use stop to wait FFMPEG quit one by one and send SIGKILL if needed.
-    stop();
+    // then, use fast kill to ensure FFMPEG quit.
+    fast_kill();
 }
 
 srs_error_t SrsIngester::start()
@@ -166,25 +180,40 @@ void SrsIngester::fast_stop()
     }
 }
 
+void SrsIngester::fast_kill()
+{
+    std::vector<SrsIngesterFFMPEG*>::iterator it;
+    for (it = ingesters.begin(); it != ingesters.end(); ++it) {
+        SrsIngesterFFMPEG* ingester = *it;
+        ingester->fast_kill();
+    }
+
+    if (!ingesters.empty()) {
+        srs_trace("fast kill all ingesters ok.");
+    }
+}
+
 // when error, ingester sleep for a while and retry.
 // ingest never sleep a long time, for we must start the stream ASAP.
-#define SRS_AUTO_INGESTER_CIMS (3000)
+#define SRS_INGESTER_CIMS (3 * SRS_UTIME_SECONDS)
 
 srs_error_t SrsIngester::cycle()
 {
     srs_error_t err = srs_success;
     
-    while (true) {
+    while (!disposed) {
+        // We always check status first.
+        // @see https://github.com/ossrs/srs/issues/1634#issuecomment-597571561
+        if ((err = trd->pull()) != srs_success) {
+            return srs_error_wrap(err, "ingester");
+        }
+
         if ((err = do_cycle()) != srs_success) {
             srs_warn("Ingester: Ignore error, %s", srs_error_desc(err).c_str());
             srs_freep(err);
         }
-        
-        if ((err = trd->pull()) != srs_success) {
-            return srs_error_wrap(err, "ingester");
-        }
-    
-        srs_usleep(SRS_AUTO_INGESTER_CIMS * 1000);
+
+        srs_usleep(SRS_INGESTER_CIMS);
     }
     
     return err;
@@ -356,6 +385,7 @@ srs_error_t SrsIngester::initialize_ffmpeg(SrsFFMPEG* ffmpeg, SrsConfDirective* 
     // ie. rtmp://localhost:1935/live/livestream_sd
     output = srs_string_replace(output, "[vhost]", vhost->arg0());
     output = srs_string_replace(output, "[port]", srs_int2str(port));
+    output = srs_path_build_timestamp(output);
     if (output.empty()) {
         return srs_error_new(ERROR_ENCODER_NO_OUTPUT, "empty output url, ingest=%s", ingest->arg0().c_str());
     }
@@ -371,8 +401,8 @@ srs_error_t SrsIngester::initialize_ffmpeg(SrsFFMPEG* ffmpeg, SrsConfDirective* 
     
     std::string log_file = SRS_CONSTS_NULL_FILE; // disabled
     // write ffmpeg info to log file.
-    if (_srs_config->get_ffmpeg_log_enabled()) {
-        log_file = _srs_config->get_ffmpeg_log_dir();
+    if (_srs_config->get_ff_log_enabled()) {
+        log_file = _srs_config->get_ff_log_dir();
         log_file += "/";
         log_file += "ffmpeg-ingest";
         log_file += "-";
@@ -383,7 +413,13 @@ srs_error_t SrsIngester::initialize_ffmpeg(SrsFFMPEG* ffmpeg, SrsConfDirective* 
         log_file += stream;
         log_file += ".log";
     }
-    
+
+    std::string log_level = _srs_config->get_ff_log_level();
+    if (!log_level.empty()) {
+        ffmpeg->append_iparam("-loglevel");
+        ffmpeg->append_iparam(log_level);
+    }
+
     // input
     std::string input_type = _srs_config->get_ingest_input_type(ingest);
     if (input_type.empty()) {
@@ -397,7 +433,7 @@ srs_error_t SrsIngester::initialize_ffmpeg(SrsFFMPEG* ffmpeg, SrsConfDirective* 
         }
         
         // for file, set re.
-        ffmpeg->set_iparams("-re");
+        ffmpeg->append_iparam("-re");
         
         if ((err = ffmpeg->initialize(input_url, output, log_file)) != srs_success) {
             return srs_error_wrap(err, "init ffmpeg");
@@ -409,7 +445,7 @@ srs_error_t SrsIngester::initialize_ffmpeg(SrsFFMPEG* ffmpeg, SrsConfDirective* 
         }
         
         // for stream, no re.
-        ffmpeg->set_iparams("");
+        ffmpeg->append_iparam("");
         
         if ((err = ffmpeg->initialize(input_url, output, log_file)) != srs_success) {
             return srs_error_wrap(err, "init ffmpeg");
@@ -454,8 +490,8 @@ void SrsIngester::show_ingest_log_message()
     
     // reportable
     if (pprint->can_print()) {
-        srs_trace("-> " SRS_CONSTS_LOG_INGESTER " time=%" PRId64 ", ingesters=%d, #%d(alive=%ds, %s)",
-                  pprint->age(), (int)ingesters.size(), index, ingester->alive() / 1000, ingester->uri().c_str());
+        srs_trace("-> " SRS_CONSTS_LOG_INGESTER " time=%dms, ingesters=%d, #%d(alive=%dms, %s)",
+                  srsu2msi(pprint->age()), (int)ingesters.size(), index, srsu2msi(ingester->alive()), ingester->uri().c_str());
     }
 }
 

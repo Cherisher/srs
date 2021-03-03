@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -34,7 +34,7 @@
 #include <srs_kernel_buffer.hpp>
 #include <srs_kernel_utility.hpp>
 
-using namespace _srs_internal;
+using namespace srs_internal;
 
 // for openssl_HMACsha256
 #include <openssl/evp.h>
@@ -42,9 +42,13 @@ using namespace _srs_internal;
 // for openssl_generate_key
 #include <openssl/dh.h>
 
+// For randomly generate the handshake bytes.
+#define RTMP_SIG_SRS_HANDSHAKE RTMP_SIG_SRS_KEY "(" RTMP_SIG_SRS_VERSION ")"
+
+// @see https://wiki.openssl.org/index.php/OpenSSL_1.1.0_Changes
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 
-static HMAC_CTX *HMAC_CTX_new(void)
+HMAC_CTX *HMAC_CTX_new(void)
 {
     HMAC_CTX *ctx = (HMAC_CTX *)malloc(sizeof(*ctx));
     if (ctx != NULL) {
@@ -53,7 +57,7 @@ static HMAC_CTX *HMAC_CTX_new(void)
     return ctx;
 }
 
-static void HMAC_CTX_free(HMAC_CTX *ctx)
+void HMAC_CTX_free(HMAC_CTX *ctx)
 {
     if (ctx != NULL) {
         HMAC_CTX_cleanup(ctx);
@@ -108,7 +112,7 @@ static int DH_set_length(DH *dh, long length)
 
 #endif
 
-namespace _srs_internal
+namespace srs_internal
 {
     // 68bytes FMS key which is used to sign the sever packet.
     uint8_t SrsGenuineFMSKey[] = {
@@ -134,7 +138,7 @@ namespace _srs_internal
         0x6E, 0xEC, 0x5D, 0x2D, 0x29, 0x80, 0x6F, 0xAB,
         0x93, 0xB8, 0xE6, 0x36, 0xCF, 0xEB, 0x31, 0xAE
     }; // 62
-    
+
     srs_error_t do_openssl_HMACsha256(HMAC_CTX* ctx, const void* data, int data_size, void* digest, unsigned int* digest_size)
     {
         srs_error_t err = srs_success;
@@ -149,6 +153,7 @@ namespace _srs_internal
         
         return err;
     }
+
     /**
      * sha256 digest algorithm.
      * @param key the sha256 key, NULL to use EVP_Digest, for instance,
@@ -198,24 +203,24 @@ namespace _srs_internal
         return err;
     }
     
-#define RFC2409_PRIME_1024 \
-"FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1" \
-"29024E088A67CC74020BBEA63B139B22514A08798E3404DD" \
-"EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245" \
-"E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED" \
-"EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381" \
-"FFFFFFFFFFFFFFFF"
-    
+    #define RFC2409_PRIME_1024 \
+        "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1" \
+        "29024E088A67CC74020BBEA63B139B22514A08798E3404DD" \
+        "EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245" \
+        "E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED" \
+        "EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381" \
+        "FFFFFFFFFFFFFFFF"
+
     SrsDH::SrsDH()
     {
         pdh = NULL;
     }
-    
+
     SrsDH::~SrsDH()
     {
         close();
     }
-    
+
     void SrsDH::close()
     {
         if (pdh != NULL) {
@@ -860,6 +865,8 @@ namespace _srs_internal
     c1s1::c1s1()
     {
         payload = NULL;
+        version = 0;
+        time = 0;
     }
     c1s1::~c1s1()
     {
@@ -973,7 +980,7 @@ namespace _srs_internal
         srs_random_generate(random, 1504);
         
         int size = snprintf(random, 1504, "%s", RTMP_SIG_SRS_HANDSHAKE);
-        srs_assert(++size < 1504);
+        srs_assert(size < 1504);
         snprintf(random + 1504 - size, size, "%s", RTMP_SIG_SRS_HANDSHAKE);
         
         srs_random_generate(digest, 32);
@@ -1220,6 +1227,7 @@ srs_error_t SrsComplexHandshake::handshake_with_client(SrsHandshakeBytes* hs_byt
     }
     // verify s2
     if ((err = s2.s2_validate(&c1, is_valid)) != srs_success || !is_valid) {
+        srs_freep(err);
         return srs_error_new(ERROR_RTMP_TRY_SIMPLE_HS, "verify s2 failed, try simple handshake");
     }
     

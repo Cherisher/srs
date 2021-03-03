@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -35,9 +35,7 @@
 class SrsBuffer;
 class ISrsStreamWriter;
 
-/**
- * Transmux the RTMP packets to AAC stream.
- */
+// Transmux the RTMP packets to AAC stream.
 class SrsAacTransmuxer
 {
 private:
@@ -51,17 +49,13 @@ public:
     SrsAacTransmuxer();
     virtual ~SrsAacTransmuxer();
 public:
-    /**
-     * initialize the underlayer file stream.
-     * @remark user can initialize multiple times to encode multiple aac files.
-     * @remark, user must free the fs, aac encoder never close/free it.
-     */
+    // Initialize the underlayer file stream.
+    // @remark User can initialize multiple times to encode multiple aac files.
+    // @remark User must free the fs, aac encoder never close/free it.
     virtual srs_error_t initialize(ISrsStreamWriter* fs);
 public:
-    /**
-     * write audio/video packet.
-     * @remark assert data is not NULL.
-     */
+   // Write audio/video packet.
+   // @remark The assert data should not be NULL.
     virtual srs_error_t write_audio(int64_t timestamp, char* data, int size);
 };
 

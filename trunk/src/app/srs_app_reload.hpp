@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -28,13 +28,11 @@
 
 #include <string>
 
-/**
- * the handler for config reload.
- * when reload callback, the config is updated yet.
- *
- * features not support reload,
- * @see: https://github.com/ossrs/srs/wiki/v1_CN_Reload#notsupportedfeatures
- */
+// The handler for config reload.
+// When reload callback, the config is updated yet.
+//
+// Features not support reload,
+// @see: https://github.com/ossrs/srs/wiki/v1_CN_Reload#notsupportedfeatures
 class ISrsReloadHandler
 {
 public:
@@ -51,12 +49,15 @@ public:
     virtual srs_error_t on_reload_pithy_print();
     virtual srs_error_t on_reload_http_api_enabled();
     virtual srs_error_t on_reload_http_api_disabled();
+    virtual srs_error_t on_reload_https_api_enabled();
+    virtual srs_error_t on_reload_https_api_disabled();
     virtual srs_error_t on_reload_http_api_crossdomain();
     virtual srs_error_t on_reload_http_api_raw_api();
     virtual srs_error_t on_reload_http_stream_enabled();
     virtual srs_error_t on_reload_http_stream_disabled();
     virtual srs_error_t on_reload_http_stream_updated();
     virtual srs_error_t on_reload_http_stream_crossdomain();
+    virtual srs_error_t on_reload_rtc_server();
 public:
     // TODO: FIXME: should rename to http_static
     virtual srs_error_t on_reload_vhost_http_updated();

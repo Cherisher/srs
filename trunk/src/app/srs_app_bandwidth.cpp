@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -37,34 +37,34 @@ using namespace std;
 #include <srs_protocol_kbps.hpp>
 #include <srs_app_st.hpp>
 
-#define _SRS_BANDWIDTH_LIMIT_INTERVAL_MS 100
+#define _SRS_BANDWIDTH_LIMIT_INTERVAL 100 * SRS_UTIME_MILLISECONDS
 
 // default sample duration, in ms
-#define _SRS_BANDWIDTH_SAMPLE_DURATION_MS 3000
+#define _SRS_BANDWIDTH_SAMPLE_DURATION 3000 * SRS_UTIME_MILLISECONDS
 
 // wait for a while for flash to got all packets.
-#define _SRS_BANDWIDTH_FINAL_WAIT_MS 600
+#define _SRS_BANDWIDTH_FINAL_WAIT 600 * SRS_UTIME_MILLISECONDS
 
 SrsBandwidthSample::SrsBandwidthSample()
 {
-    duration_ms = _SRS_BANDWIDTH_SAMPLE_DURATION_MS;
-    kbps = interval_ms = actual_duration_ms = bytes = 0;
+    duration = _SRS_BANDWIDTH_SAMPLE_DURATION;
+    kbps = interval = actual_duration = bytes = 0;
 }
 
 SrsBandwidthSample::~SrsBandwidthSample()
 {
 }
 
-void SrsBandwidthSample::calc_kbps(int _bytes, int _duration)
+void SrsBandwidthSample::calc_kbps(int _bytes, srs_utime_t _duration)
 {
     bytes = _bytes;
-    actual_duration_ms = _duration;
+    actual_duration = _duration;
     
-    if (actual_duration_ms <= 0) {
+    if (actual_duration <= 0) {
         return;
     }
     
-    kbps = bytes * 8 / actual_duration_ms;
+    kbps = bytes * 8 / srsu2ms(actual_duration);
 }
 
 /**
@@ -91,7 +91,7 @@ bool _bandwidth_is_stopped_publish(SrsBandwidthPacket* pkt)
 {
     return pkt->is_stopped_publish();
 }
-srs_error_t _srs_expect_bandwidth_packet(SrsRtmpServer* rtmp, _CheckPacketType pfn)
+srs_error_t srs_expect_bandwidth_packet(SrsRtmpServer* rtmp, _CheckPacketType pfn)
 {
     srs_error_t err = srs_success;
     
@@ -144,15 +144,14 @@ srs_error_t SrsBandwidth::bandwidth_check(SrsRtmpServer* rtmp, ISrsProtocolStati
     // to prevent bandwidth check attack,
     // if client request check in the window(specifeid by interval),
     // directly reject the request.
-    static int64_t last_check_time = 0;
-    int interval_ms = _srs_config->get_bw_check_interval_ms(_req->vhost);
+    static srs_utime_t last_check_time = 0;
+    srs_utime_t interval = _srs_config->get_bw_check_interval(_req->vhost);
     
-    srs_update_system_time_ms();
-    int64_t time_now = srs_get_system_time_ms();
+    srs_utime_t time_now = srs_update_system_time();
     // reject the connection in the interval window.
-    if (last_check_time > 0 && time_now - last_check_time < interval_ms) {
+    if (last_check_time > 0 && time_now - last_check_time < interval) {
         _rtmp->response_connect_reject(_req, "bandcheck rejected");
-        return srs_error_new(ERROR_SYSTEM_BANDWIDTH_DENIED, "reject, last_check=%" PRId64 ", now=%" PRId64 ", interval=%d", last_check_time, time_now, interval_ms);
+        return srs_error_new(ERROR_SYSTEM_BANDWIDTH_DENIED, "reject, last_check=%" PRId64 ", now=%" PRId64 ", interval=%" PRId64 "", last_check_time, time_now, interval);
     }
     
     // accept and do bandwidth check.
@@ -181,12 +180,11 @@ srs_error_t SrsBandwidth::do_bandwidth_check(SrsKbpsLimit* limit)
     SrsBandwidthSample publish_sample;
     
     // timeout for a packet.
-    _rtmp->set_send_timeout(play_sample.duration_ms * 2);
-    _rtmp->set_recv_timeout(publish_sample.duration_ms * 2);
+    _rtmp->set_send_timeout(play_sample.duration * 2);
+    _rtmp->set_recv_timeout(publish_sample.duration * 2);
     
     // start test.
-    srs_update_system_time_ms();
-    int64_t start_time = srs_get_system_time_ms();
+    srs_utime_t start_time = srs_update_system_time();
     
     // sample play
     if ((err = play_start(&play_sample, limit)) != srs_success) {
@@ -211,19 +209,17 @@ srs_error_t SrsBandwidth::do_bandwidth_check(SrsKbpsLimit* limit)
     }
     
     // stop test.
-    srs_update_system_time_ms();
-    int64_t end_time = srs_get_system_time_ms();
-    
-    srs_trace("bandwidth ok. duartion=%dms(%d+%d), play=%dkbps, publish=%dkbps",
-              (int)(end_time - start_time), play_sample.actual_duration_ms,
-              publish_sample.actual_duration_ms, play_sample.kbps,
-              publish_sample.kbps);
+    srs_utime_t end_time = srs_update_system_time();
     
     if ((err = do_final(play_sample, publish_sample, start_time, end_time)) != srs_success) {
         return srs_error_wrap(err, "final");
     }
+
+    srs_trace("bandwidth ok. duartion=%dms(%d+%d), play=%dkbps, publish=%dkbps",
+		srsu2msi(end_time - start_time), srsu2msi(play_sample.actual_duration), srsu2msi(publish_sample.actual_duration),
+		play_sample.kbps, publish_sample.kbps);
     
-    srs_usleep(_SRS_BANDWIDTH_FINAL_WAIT_MS * 1000);
+    srs_usleep(_SRS_BANDWIDTH_FINAL_WAIT);
     
     return err;
 }
@@ -237,15 +233,15 @@ srs_error_t SrsBandwidth::play_start(SrsBandwidthSample* sample, SrsKbpsLimit* l
         SrsBandwidthPacket* pkt = SrsBandwidthPacket::create_start_play();
         
         pkt->data->set("limit_kbps", SrsAmf0Any::number(limit->limit_kbps()));
-        pkt->data->set("duration_ms", SrsAmf0Any::number(sample->duration_ms));
-        pkt->data->set("interval_ms", SrsAmf0Any::number(sample->interval_ms));
+        pkt->data->set("duration_ms", SrsAmf0Any::number(srsu2msi(sample->duration)));
+        pkt->data->set("interval_ms", SrsAmf0Any::number(srsu2msi(sample->interval)));
         
         if ((err = _rtmp->send_and_free_packet(pkt, 0)) != srs_success) {
             return srs_error_wrap(err, "send packet");
         }
     }
     
-    if ((err = _srs_expect_bandwidth_packet(_rtmp, _bandwidth_is_starting_play)) != srs_success) {
+    if ((err = srs_expect_bandwidth_packet(_rtmp, _bandwidth_is_starting_play)) != srs_success) {
         return srs_error_wrap(err, "expect bandwidth");
     }
     
@@ -262,10 +258,9 @@ srs_error_t SrsBandwidth::play_checking(SrsBandwidthSample* sample, SrsKbpsLimit
     memset(random_data, 'A', size);
     
     int data_count = 1;
-    srs_update_system_time_ms();
-    int64_t starttime = srs_get_system_time_ms();
-    while ((srs_get_system_time_ms() - starttime) < sample->duration_ms) {
-        srs_usleep(sample->interval_ms);
+    srs_utime_t starttime = srs_update_system_time();
+    while (srs_get_system_time() - starttime < sample->duration) {
+        srs_usleep(sample->interval);
         
         // TODO: FIXME: use shared ptr message.
         SrsBandwidthPacket* pkt = SrsBandwidthPacket::create_playing();
@@ -285,8 +280,8 @@ srs_error_t SrsBandwidth::play_checking(SrsBandwidthSample* sample, SrsKbpsLimit
         
         limit->send_limit();
     }
-    srs_update_system_time_ms();
-    sample->calc_kbps((int)_rtmp->get_send_bytes(), (int)(srs_get_system_time_ms() - starttime));
+    srs_update_system_time();
+    sample->calc_kbps((int)_rtmp->get_send_bytes(), srsu2msi(srs_get_system_time() - starttime));
     
     return err;
 }
@@ -299,9 +294,9 @@ srs_error_t SrsBandwidth::play_stop(SrsBandwidthSample* sample, SrsKbpsLimit* /*
         // notify client to stop play
         SrsBandwidthPacket* pkt = SrsBandwidthPacket::create_stop_play();
         
-        pkt->data->set("duration_ms", SrsAmf0Any::number(sample->duration_ms));
-        pkt->data->set("interval_ms", SrsAmf0Any::number(sample->interval_ms));
-        pkt->data->set("duration_delta", SrsAmf0Any::number(sample->actual_duration_ms));
+        pkt->data->set("duration_ms", SrsAmf0Any::number(srsu2msi(sample->duration)));
+        pkt->data->set("interval_ms", SrsAmf0Any::number(srsu2msi(sample->interval)));
+        pkt->data->set("duration_delta", SrsAmf0Any::number(srsu2msi(sample->actual_duration)));
         pkt->data->set("bytes_delta", SrsAmf0Any::number(sample->bytes));
         
         if ((err = _rtmp->send_and_free_packet(pkt, 0)) != srs_success) {
@@ -309,7 +304,7 @@ srs_error_t SrsBandwidth::play_stop(SrsBandwidthSample* sample, SrsKbpsLimit* /*
         }
     }
     
-    if ((err = _srs_expect_bandwidth_packet(_rtmp, _bandwidth_is_stopped_play)) != srs_success) {
+    if ((err = srs_expect_bandwidth_packet(_rtmp, _bandwidth_is_stopped_play)) != srs_success) {
         return srs_error_wrap(err, "expect bandwidth");
     }
     
@@ -325,15 +320,15 @@ srs_error_t SrsBandwidth::publish_start(SrsBandwidthSample* sample, SrsKbpsLimit
         SrsBandwidthPacket* pkt = SrsBandwidthPacket::create_start_publish();
         
         pkt->data->set("limit_kbps", SrsAmf0Any::number(limit->limit_kbps()));
-        pkt->data->set("duration_ms", SrsAmf0Any::number(sample->duration_ms));
-        pkt->data->set("interval_ms", SrsAmf0Any::number(sample->interval_ms));
+        pkt->data->set("duration_ms", SrsAmf0Any::number(srsu2msi(sample->duration)));
+        pkt->data->set("interval_ms", SrsAmf0Any::number(srsu2msi(sample->interval)));
         
         if ((err = _rtmp->send_and_free_packet(pkt, 0)) != srs_success) {
             return srs_error_wrap(err, "send packet");
         }
     }
     
-    if ((err = _srs_expect_bandwidth_packet(_rtmp, _bandwidth_is_starting_publish)) != srs_success) {
+    if ((err = srs_expect_bandwidth_packet(_rtmp, _bandwidth_is_starting_publish)) != srs_success) {
         return srs_error_wrap(err, "expect packet");
     }
     
@@ -344,10 +339,9 @@ srs_error_t SrsBandwidth::publish_checking(SrsBandwidthSample* sample, SrsKbpsLi
 {
     srs_error_t err = srs_success;
     
-    // recv publish msgs until @duration_ms ms
-    srs_update_system_time_ms();
-    int64_t starttime = srs_get_system_time_ms();
-    while ((srs_get_system_time_ms() - starttime) < sample->duration_ms) {
+    // recv publish msgs until @duration ms
+    srs_utime_t starttime = srs_update_system_time();
+    while (srs_get_system_time() - starttime < sample->duration) {
         SrsCommonMessage* msg = NULL;
         SrsBandwidthPacket* pkt = NULL;
         if ((err = _rtmp->expect_message<SrsBandwidthPacket>(&msg, &pkt)) != srs_success) {
@@ -364,8 +358,8 @@ srs_error_t SrsBandwidth::publish_checking(SrsBandwidthSample* sample, SrsKbpsLi
         
         limit->recv_limit();
     }
-    srs_update_system_time_ms();
-    sample->calc_kbps((int)_rtmp->get_recv_bytes(), (int)(srs_get_system_time_ms() - starttime));
+    srs_update_system_time();
+    sample->calc_kbps((int)_rtmp->get_recv_bytes(), srsu2msi(srs_get_system_time() - starttime));
     
     return err;
 }
@@ -377,9 +371,9 @@ srs_error_t SrsBandwidth::publish_stop(SrsBandwidthSample* sample, SrsKbpsLimit*
     if (true) {
         // notify client to stop publish
         SrsBandwidthPacket* pkt = SrsBandwidthPacket::create_stop_publish();
-        pkt->data->set("duration_ms", SrsAmf0Any::number(sample->duration_ms));
-        pkt->data->set("interval_ms", SrsAmf0Any::number(sample->interval_ms));
-        pkt->data->set("duration_delta", SrsAmf0Any::number(sample->actual_duration_ms));
+        pkt->data->set("duration_ms", SrsAmf0Any::number(srsu2msi(sample->duration)));
+        pkt->data->set("interval_ms", SrsAmf0Any::number(srsu2msi(sample->interval)));
+        pkt->data->set("duration_delta", SrsAmf0Any::number(srsu2msi(sample->actual_duration)));
         pkt->data->set("bytes_delta", SrsAmf0Any::number(sample->bytes));
         
         if ((err = _rtmp->send_and_free_packet(pkt, 0)) != srs_success) {
@@ -394,7 +388,7 @@ srs_error_t SrsBandwidth::publish_stop(SrsBandwidthSample* sample, SrsKbpsLimit*
     // we just ignore the packet and send the bandwidth test data.
     bool is_flash = (_req->swfUrl != "");
     if (!is_flash) {
-        if ((err = _srs_expect_bandwidth_packet(_rtmp, _bandwidth_is_stopped_publish)) != srs_success) {
+        if ((err = srs_expect_bandwidth_packet(_rtmp, _bandwidth_is_stopped_publish)) != srs_success) {
             return srs_error_wrap(err, "expect bandwidth");
         }
     }
@@ -402,7 +396,7 @@ srs_error_t SrsBandwidth::publish_stop(SrsBandwidthSample* sample, SrsKbpsLimit*
     return err;
 }
 
-srs_error_t SrsBandwidth::do_final(SrsBandwidthSample& play_sample, SrsBandwidthSample& publish_sample, int64_t start_time, int64_t& end_time)
+srs_error_t SrsBandwidth::do_final(SrsBandwidthSample& play_sample, SrsBandwidthSample& publish_sample, srs_utime_t start_time, srs_utime_t& end_time)
 {
     srs_error_t err = srs_success;
     
@@ -410,14 +404,14 @@ srs_error_t SrsBandwidth::do_final(SrsBandwidthSample& play_sample, SrsBandwidth
     // flash client will close connection when got this packet,
     // for the publish queue may contains packets.
     SrsBandwidthPacket* pkt = SrsBandwidthPacket::create_finish();
-    pkt->data->set("start_time",     SrsAmf0Any::number(start_time));
-    pkt->data->set("end_time",       SrsAmf0Any::number(end_time));
+    pkt->data->set("start_time",     SrsAmf0Any::number(srsu2ms(start_time)));
+    pkt->data->set("end_time",       SrsAmf0Any::number(srsu2ms(end_time)));
     pkt->data->set("play_kbps",      SrsAmf0Any::number(play_sample.kbps));
     pkt->data->set("publish_kbps",   SrsAmf0Any::number(publish_sample.kbps));
     pkt->data->set("play_bytes",     SrsAmf0Any::number(play_sample.bytes));
     pkt->data->set("publish_bytes",  SrsAmf0Any::number(publish_sample.bytes));
-    pkt->data->set("play_time",      SrsAmf0Any::number(play_sample.actual_duration_ms));
-    pkt->data->set("publish_time",   SrsAmf0Any::number(publish_sample.actual_duration_ms));
+    pkt->data->set("play_time",      SrsAmf0Any::number(srsu2msi(play_sample.actual_duration)));
+    pkt->data->set("publish_time",   SrsAmf0Any::number(srsu2msi(publish_sample.actual_duration)));
     
     if ((err = _rtmp->send_and_free_packet(pkt, 0)) != srs_success) {
         return srs_error_wrap(err, "send packet");
@@ -428,7 +422,7 @@ srs_error_t SrsBandwidth::do_final(SrsBandwidthSample& play_sample, SrsBandwidth
     bool is_flash = (_req->swfUrl != "");
     if (!is_flash) {
         // ignore any error.
-        err = _srs_expect_bandwidth_packet(_rtmp, _bandwidth_is_final);
+        err = srs_expect_bandwidth_packet(_rtmp, _bandwidth_is_final);
         srs_error_reset(err);
     }
     
@@ -457,7 +451,7 @@ void SrsKbpsLimit::recv_limit()
     while (_kbps->get_recv_kbps() > _limit_kbps) {
         _kbps->sample();
         
-        srs_usleep(_SRS_BANDWIDTH_LIMIT_INTERVAL_MS * 1000);
+        srs_usleep(_SRS_BANDWIDTH_LIMIT_INTERVAL);
     }
 }
 
@@ -468,7 +462,7 @@ void SrsKbpsLimit::send_limit()
     while (_kbps->get_send_kbps() > _limit_kbps) {
         _kbps->sample();
         
-        srs_usleep(_SRS_BANDWIDTH_LIMIT_INTERVAL_MS * 1000);
+        srs_usleep(_SRS_BANDWIDTH_LIMIT_INTERVAL);
     }
 }
 

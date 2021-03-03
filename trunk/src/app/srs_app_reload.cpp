@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -85,6 +85,16 @@ srs_error_t ISrsReloadHandler::on_reload_http_api_disabled()
     return srs_success;
 }
 
+srs_error_t ISrsReloadHandler::on_reload_https_api_enabled()
+{
+    return srs_success;
+}
+
+srs_error_t ISrsReloadHandler::on_reload_https_api_disabled()
+{
+    return srs_success;
+}
+
 srs_error_t ISrsReloadHandler::on_reload_http_api_crossdomain()
 {
     return srs_success;
@@ -111,6 +121,11 @@ srs_error_t ISrsReloadHandler::on_reload_http_stream_updated()
 }
 
 srs_error_t ISrsReloadHandler::on_reload_http_stream_crossdomain()
+{
+    return srs_success;
+}
+
+srs_error_t ISrsReloadHandler::on_reload_rtc_server()
 {
     return srs_success;
 }

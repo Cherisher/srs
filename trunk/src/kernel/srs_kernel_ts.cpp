@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -45,14 +45,6 @@ using namespace std;
 #include <srs_core_autofree.hpp>
 
 #define HLS_AES_ENCRYPT_BLOCK_LENGTH SRS_TS_PACKET_SIZE * 4
-
-// in ms, for HLS aac sync time.
-#define SRS_CONF_DEFAULT_AAC_SYNC 100
-
-// @see: ngx_rtmp_hls_audio
-/* We assume here AAC frame size is 1024
- * Need to handle AAC frames with frame size of 960 */
-#define _SRS_AAC_SAMPLE_SIZE 1024
 
 // the mpegts header specifed the video/audio pid.
 #define TS_PMT_NUMBER 1
@@ -321,6 +313,7 @@ srs_error_t SrsTsContext::encode(ISrsStreamWriter* writer, SrsTsMessage* msg, Sr
         case SrsVideoCodecIdOn2VP6WithAlphaChannel:
         case SrsVideoCodecIdScreenVideoVersion2:
         case SrsVideoCodecIdHEVC:
+        case SrsVideoCodecIdAV1:
             vs = SrsTsStreamReserved;
             break;
     }
@@ -628,7 +621,7 @@ srs_error_t SrsTsPacket::decode(SrsBuffer* stream, SrsTsMessage** ppmsg)
                 payload = new SrsTsPayloadPES(this);
             } else {
                 // left bytes as reserved.
-                stream->skip(nb_payload);
+                stream->skip(srs_min(stream->left(), nb_payload));
             }
         }
         
@@ -818,6 +811,8 @@ SrsTsPacket* SrsTsPacket::create_pes_first(SrsTsContext* context,
     pkt->payload = pes;
     
     if (pcr >= 0) {
+        // Ignore coverage for PCR, we don't use it in HLS.
+        // LCOV_EXCL_START
         SrsTsAdaptationField* af = new SrsTsAdaptationField(pkt);
         pkt->adaptation_field = af;
         pkt->adaption_field_control = SrsTsAdaptationFieldTypeBoth;
@@ -833,6 +828,7 @@ SrsTsPacket* SrsTsPacket::create_pes_first(SrsTsContext* context,
         af->adaptation_field_extension_flag = 0;
         af->program_clock_reference_base = pcr;
         af->program_clock_reference_extension = 0;
+        // LCOV_EXCL_STOP
     }
     
     pes->packet_start_code_prefix = 0x01;
@@ -980,7 +976,9 @@ srs_error_t SrsTsAdaptationField::decode(SrsBuffer* stream)
         const1_value0 = (pcrv >> 9) & 0x3F;
         program_clock_reference_base = (pcrv >> 15) & 0x1ffffffffLL;
     }
-    
+
+    // Ignore coverage for bellow, we don't use it in HLS.
+    // LCOV_EXCL_START
     if (OPCR_flag) {
         if (!stream->require(6)) {
             return srs_error_new(ERROR_STREAM_CASTER_TS_AF, "ts: demux af OPCR_flag");
@@ -1088,6 +1086,7 @@ srs_error_t SrsTsAdaptationField::decode(SrsBuffer* stream)
         nb_af_ext_reserved = adaptation_field_extension_length - (stream->pos() - pos_af_ext);
         stream->skip(nb_af_ext_reserved);
     }
+    // LCOV_EXCL_STOP
     
     nb_af_reserved = adaption_field_length - (stream->pos() - pos_af);
     stream->skip(nb_af_reserved);
@@ -1151,7 +1150,9 @@ srs_error_t SrsTsAdaptationField::encode(SrsBuffer* stream)
     tmpv |= (splicing_point_flag << 2) & 0x04;
     tmpv |= (transport_private_data_flag << 1) & 0x02;
     stream->write_1bytes(tmpv);
-    
+
+    // Ignore the coverage bellow, for we don't use them in HLS.
+    // LCOV_EXCL_START
     if (PCR_flag) {
         if (!stream->require(6)) {
             return srs_error_new(ERROR_STREAM_CASTER_TS_AF, "ts: mux af PCR_flag");
@@ -1244,6 +1245,7 @@ srs_error_t SrsTsAdaptationField::encode(SrsBuffer* stream)
             stream->skip(nb_af_ext_reserved);
         }
     }
+    // LCOV_EXCL_STOP
     
     if (nb_af_reserved) {
         stream->skip(nb_af_reserved);
@@ -1273,6 +1275,41 @@ SrsTsPayloadPES::SrsTsPayloadPES(SrsTsPacket* p) : SrsTsPayload(p)
     nb_paddings = 0;
     const2bits = 0x02;
     const1_value0 = 0x07;
+
+    packet_start_code_prefix = 0;
+    stream_id = 0;
+    PES_packet_length = 0;
+    PES_scrambling_control = 0;
+    PES_priority = 0;
+    data_alignment_indicator = 0;
+    copyright = 0;
+    original_or_copy = 0;
+    PTS_DTS_flags = 0;
+    ESCR_flag = 0;
+    ES_rate_flag = 0;
+    DSM_trick_mode_flag = 0;
+    additional_copy_info_flag = 0;
+    PES_CRC_flag = 0;
+    PES_extension_flag = 0;
+    PES_header_data_length = 0;
+    pts = dts = 0;
+    ESCR_base = 0;
+    ESCR_extension = 0;
+    ES_rate = 0;
+    trick_mode_control = 0;
+    trick_mode_value = 0;
+    additional_copy_info = 0;
+    previous_PES_packet_CRC = 0;
+    PES_private_data_flag = 0;
+    pack_header_field_flag = 0;
+    program_packet_sequence_counter_flag = 0;
+    P_STD_buffer_flag = 0;
+    PES_extension_flag_2 = 0;
+    program_packet_sequence_counter = 0;
+    MPEG1_MPEG2_identifier = 0;
+    original_stuff_length = 0;
+    P_STD_buffer_scale = 0;
+    P_STD_buffer_size = 0;
 }
 
 SrsTsPayloadPES::~SrsTsPayloadPES()
@@ -1468,7 +1505,10 @@ srs_error_t SrsTsPayloadPES::decode(SrsBuffer* stream, SrsTsMessage** ppmsg)
                 msg->dts = dts;
                 msg->pts = pts;
             }
-            
+
+            // Ignore coverage bellow, for we don't use them in HLS.
+            // LCOV_EXCL_START
+
             // 6B
             if (ESCR_flag) {
                 ESCR_extension = 0;
@@ -1596,6 +1636,8 @@ srs_error_t SrsTsPayloadPES::decode(SrsBuffer* stream, SrsTsMessage** ppmsg)
                 }
                 stream->skip(nb_stuffings);
             }
+
+            // LCOV_EXCL_STOP
             
             // PES_packet_data_byte, page58.
             // the packet size contains the header size.
@@ -1618,6 +1660,9 @@ srs_error_t SrsTsPayloadPES::decode(SrsBuffer* stream, SrsTsMessage** ppmsg)
             if ((err = msg->dump(stream, &nb_bytes)) != srs_success) {
                 return srs_error_wrap(err, "dump pes");
             }
+
+            // Ignore coverage bellow, for we don't use them in HLS.
+            // LCOV_EXCL_START
         } else if (sid == SrsTsPESStreamIdProgramStreamMap
                    || sid == SrsTsPESStreamIdPrivateStream2
                    || sid == SrsTsPESStreamIdEcmStream
@@ -1641,6 +1686,8 @@ srs_error_t SrsTsPayloadPES::decode(SrsBuffer* stream, SrsTsMessage** ppmsg)
             nb_paddings = stream->size() - stream->pos();
             stream->skip(nb_paddings);
             srs_info("ts: drop %dB padding bytes", nb_paddings);
+
+            // LCOV_EXCL_STOP
         } else {
             int nb_drop = stream->size() - stream->pos();
             stream->skip(nb_drop);
@@ -1693,13 +1740,16 @@ int SrsTsPayloadPES::size()
         sz += additional_copy_info_flag? 1:0;
         sz += PES_CRC_flag? 2:0;
         sz += PES_extension_flag? 1:0;
-        
+
         if (PES_extension_flag) {
+            // Ignore coverage bellow, for we don't use them in HLS.
+            // LCOV_EXCL_START
             sz += PES_private_data_flag? 16:0;
             sz += pack_header_field_flag ? 1 + pack_field.size() : 0; // 1+x bytes.
             sz += program_packet_sequence_counter_flag? 2:0;
             sz += P_STD_buffer_flag? 2:0;
             sz += PES_extension_flag_2 ? 1 + PES_extension_field.size() : 0; // 1+x bytes.
+            // LCOV_EXCL_STOP
         }
         PES_header_data_length = sz - PES_header_data_length;
         
@@ -1810,6 +1860,9 @@ srs_error_t SrsTsPayloadPES::encode(SrsBuffer* stream)
             srs_warn("ts: sync dts=%" PRId64 ", pts=%" PRId64, dts, pts);
         }
     }
+
+    // Ignore coverage bellow, for we don't use them in HLS.
+    // LCOV_EXCL_START
     
     // 6B
     if (ESCR_flag) {
@@ -1869,6 +1922,8 @@ srs_error_t SrsTsPayloadPES::encode(SrsBuffer* stream)
         stream->skip(nb_stuffings);
         srs_warn("ts: demux PES, ignore the stuffings.");
     }
+
+    // LCOV_EXCL_STOP
     
     return err;
 }
@@ -1957,6 +2012,9 @@ SrsTsPayloadPSI::SrsTsPayloadPSI(SrsTsPacket* p) : SrsTsPayload(p)
     const0_value = 0;
     const1_value = 3;
     CRC_32 = 0;
+    section_length = 0;
+    section_syntax_indicator = 0;
+    table_id = SrsTsPsiIdPas;
 }
 
 SrsTsPayloadPSI::~SrsTsPayloadPSI()
@@ -2168,7 +2226,12 @@ srs_error_t SrsTsPayloadPATProgram::encode(SrsBuffer* stream)
 
 SrsTsPayloadPAT::SrsTsPayloadPAT(SrsTsPacket* p) : SrsTsPayloadPSI(p)
 {
+    transport_stream_id = 0;
     const3_value = 3;
+    version_number = 0;
+    current_next_indicator = 0;
+    section_number = 0;
+    last_section_number = 0;
 }
 
 SrsTsPayloadPAT::~SrsTsPayloadPAT()
@@ -2367,6 +2430,12 @@ SrsTsPayloadPMT::SrsTsPayloadPMT(SrsTsPacket* p) : SrsTsPayloadPSI(p)
     const1_value0 = 3;
     const1_value1 = 7;
     const1_value2 = 0x0f;
+    PCR_PID = 0;
+    last_section_number = 0;
+    program_number = 0;
+    version_number = 0;
+    current_next_indicator = 0;
+    section_number = 0;
 }
 
 SrsTsPayloadPMT::~SrsTsPayloadPMT()

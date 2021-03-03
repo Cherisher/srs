@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -26,8 +26,11 @@
 using namespace std;
 
 #include <srs_kernel_error.hpp>
-#include <srs_app_st.hpp>
 #include <srs_kernel_log.hpp>
+
+#include <srs_protocol_kbps.hpp>
+
+SrsPps* _srs_pps_timer = new SrsPps();
 
 ISrsHourGlass::ISrsHourGlass()
 {
@@ -37,26 +40,51 @@ ISrsHourGlass::~ISrsHourGlass()
 {
 }
 
-SrsHourGlass::SrsHourGlass(ISrsHourGlass* h, int resolution_ms)
+SrsHourGlass::SrsHourGlass(string label, ISrsHourGlass* h, srs_utime_t resolution)
 {
+    label_ = label;
     handler = h;
-    resolution = resolution_ms;
+    _resolution = resolution;
     total_elapse = 0;
+    trd = new SrsSTCoroutine("timer-" + label, this, _srs_context->get_id());
 }
 
 SrsHourGlass::~SrsHourGlass()
 {
+    srs_freep(trd);
 }
 
-srs_error_t SrsHourGlass::tick(int type, int interval)
+srs_error_t SrsHourGlass::start()
+{
+    srs_error_t err = srs_success;
+
+    if ((err = trd->start()) != srs_success) {
+        return srs_error_wrap(err, "start timer");
+    }
+
+    return err;
+}
+
+void SrsHourGlass::stop()
+{
+    trd->stop();
+}
+
+srs_error_t SrsHourGlass::tick(srs_utime_t interval)
+{
+    return tick(0, interval);
+}
+
+srs_error_t SrsHourGlass::tick(int event, srs_utime_t interval)
 {
     srs_error_t err = srs_success;
     
-    if (resolution > 0 && (interval % resolution) != 0) {
-        return srs_error_new(ERROR_SYSTEM_HOURGLASS_RESOLUTION, "hourglass interval=%d invalid, resolution=%d", interval, resolution);
+    if (_resolution > 0 && (interval % _resolution) != 0) {
+        return srs_error_new(ERROR_SYSTEM_HOURGLASS_RESOLUTION,
+            "invalid interval=%dms, resolution=%dms", srsu2msi(interval), srsu2msi(_resolution));
     }
     
-    ticks[type] = interval;
+    ticks[event] = interval;
     
     return err;
 }
@@ -64,21 +92,30 @@ srs_error_t SrsHourGlass::tick(int type, int interval)
 srs_error_t SrsHourGlass::cycle()
 {
     srs_error_t err = srs_success;
+
+    while (true) {
+        if ((err = trd->pull()) != srs_success) {
+            return srs_error_wrap(err, "quit");
+        }
     
-    map<int, int>::iterator it;
-    for (it = ticks.begin(); it != ticks.end(); ++it) {
-        int type = it->first;
-        int interval = it->second;
-        
-        if (interval == 0 || (total_elapse % interval) == 0) {
-            if ((err = handler->notify(type, interval, total_elapse)) != srs_success) {
-                return srs_error_wrap(err, "notify");
+        map<int, srs_utime_t>::iterator it;
+        for (it = ticks.begin(); it != ticks.end(); ++it) {
+            int event = it->first;
+            srs_utime_t interval = it->second;
+
+            if (interval == 0 || (total_elapse % interval) == 0) {
+                ++_srs_pps_timer->sugar;
+
+                if ((err = handler->notify(event, interval, total_elapse)) != srs_success) {
+                    return srs_error_wrap(err, "notify");
+                }
             }
         }
+
+        // TODO: FIXME: Maybe we should use wallclock.
+        total_elapse += _resolution;
+        srs_usleep(_resolution);
     }
-    
-    total_elapse += resolution;
-    srs_usleep(resolution * 1000);
     
     return err;
 }

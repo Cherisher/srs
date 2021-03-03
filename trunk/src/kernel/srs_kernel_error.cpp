@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -28,70 +28,88 @@
 #include <errno.h>
 #include <sstream>
 #include <stdarg.h>
+#include <unistd.h>
 using namespace std;
 
-bool srs_is_system_control_error(int error_code)
+bool srs_is_system_control_error(srs_error_t err)
 {
+    int error_code = srs_error_code(err);
     return error_code == ERROR_CONTROL_RTMP_CLOSE
         || error_code == ERROR_CONTROL_REPUBLISH
         || error_code == ERROR_CONTROL_REDIRECT;
 }
 
-bool srs_is_system_control_error(srs_error_t err)
+bool srs_is_client_gracefully_close(srs_error_t err)
 {
     int error_code = srs_error_code(err);
-    return srs_is_system_control_error(error_code);
-}
-
-bool srs_is_client_gracefully_close(int error_code)
-{
     return error_code == ERROR_SOCKET_READ
         || error_code == ERROR_SOCKET_READ_FULLY
         || error_code == ERROR_SOCKET_WRITE;
 }
 
-bool srs_is_client_gracefully_close(srs_error_t err)
+bool srs_is_server_gracefully_close(srs_error_t err)
 {
-    int error_code = srs_error_code(err);
-    return srs_is_client_gracefully_close(error_code);
+    int code = srs_error_code(err);
+    return code == ERROR_HTTP_STREAM_EOF;
 }
 
 SrsCplxError::SrsCplxError()
 {
     code = ERROR_SUCCESS;
     wrapped = NULL;
-    cid = rerrno = line = 0;
+    rerrno = line = 0;
 }
 
 SrsCplxError::~SrsCplxError()
 {
+    srs_freep(wrapped);
 }
 
 std::string SrsCplxError::description() {
     if (desc.empty()) {
         stringstream ss;
         ss << "code=" << code;
-        
+
         SrsCplxError* next = this;
         while (next) {
             ss << " : " << next->msg;
             next = next->wrapped;
         }
         ss << endl;
-        
+
         next = this;
         while (next) {
-            ss << "thread #" << next->cid << ": "
+            ss << "thread [" << getpid() << "][" << next->cid.c_str() << "]: "
             << next->func << "() [" << next->file << ":" << next->line << "]"
-            << "[errno=" << next->rerrno << "]"
-            << endl;
+            << "[errno=" << next->rerrno << "]";
+
             next = next->wrapped;
+
+            if (next) {
+                ss << endl;
+            }
         }
-        
+
         desc = ss.str();
     }
-    
+
     return desc;
+}
+
+std::string SrsCplxError::summary() {
+    if (_summary.empty()) {
+        stringstream ss;
+
+        SrsCplxError* next = this;
+        while (next) {
+            ss << " : " << next->msg;
+            next = next->wrapped;
+        }
+
+        _summary = ss.str();
+    }
+
+    return _summary;
 }
 
 SrsCplxError* SrsCplxError::create(const char* func, const char* file, int line, int code, const char* fmt, ...) {
@@ -174,6 +192,11 @@ SrsCplxError* SrsCplxError::copy(SrsCplxError* from)
 string SrsCplxError::description(SrsCplxError* err)
 {
     return err? err->description() : "Success";
+}
+
+string SrsCplxError::summary(SrsCplxError* err)
+{
+    return err? err->summary() : "Success";
 }
 
 int SrsCplxError::error_code(SrsCplxError* err)

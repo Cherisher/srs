@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -29,17 +29,15 @@
 #include <string>
 #include <vector>
 
-#include <srs_app_thread.hpp>
+#include <srs_app_st.hpp>
 
 class SrsConfDirective;
 class SrsRequest;
 class SrsPithyPrint;
 class SrsFFMPEG;
 
-/**
- * the encoder for a stream,
- * may use multiple ffmpegs to transcode the specified stream.
- */
+// The encoder for a stream, may use multiple
+// ffmpegs to transcode the specified stream.
 class SrsEncoder : public ISrsCoroutineHandler
 {
 private:
@@ -54,7 +52,7 @@ public:
 public:
     virtual srs_error_t on_publish(SrsRequest* req);
     virtual void on_unpublish();
-// interface ISrsReusableThreadHandler.
+// Interface ISrsReusableThreadHandler.
 public:
     virtual srs_error_t cycle();
 private:

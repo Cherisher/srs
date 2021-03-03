@@ -2,6 +2,7 @@
 /*.conf
 /*.txt
 /*.flv
+/*.mp4
 /doc/frozen*.flv
 /doc/kungfupanda*.flv
 /doc/time*.flv
@@ -37,4 +38,14 @@ srs
 *.dSYM/
 *.gcov
 *.ts
+*.h264
+*.264
+/webrtc
+/configure.sh
+/janus
+*.dump
+bug
+/research/thread-model/thread-local
+*.gcp
+*.svg
 

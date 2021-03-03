@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -55,29 +55,23 @@ using namespace std;
 #include <srs_app_statistic.hpp>
 #include <srs_protocol_utility.hpp>
 #include <srs_protocol_json.hpp>
-#include <srs_app_kafka.hpp>
 
-// when stream is busy, for example, streaming is already
-// publishing, when a new client to request to publish,
-// sleep a while and close the connection.
-#define SRS_STREAM_BUSY_CIMS (3000)
+// the timeout in srs_utime_t to wait encoder to republish
+// if timeout, close the connection.
+#define SRS_REPUBLISH_SEND_TIMEOUT (3 * SRS_UTIME_MINUTES)
+// if timeout, close the connection.
+#define SRS_REPUBLISH_RECV_TIMEOUT (3 * SRS_UTIME_MINUTES)
 
-// the timeout in ms to wait encoder to republish
+// the timeout in srs_utime_t to wait client data, when client paused
 // if timeout, close the connection.
-#define SRS_REPUBLISH_SEND_TMMS (3 * 60 * 1000)
+#define SRS_PAUSED_SEND_TIMEOUT (3 * SRS_UTIME_MINUTES)
 // if timeout, close the connection.
-#define SRS_REPUBLISH_RECV_TMMS (3 * 60 * 1000)
-
-// the timeout in ms to wait client data, when client paused
-// if timeout, close the connection.
-#define SRS_PAUSED_SEND_TMMS (3 * 60 * 1000)
-// if timeout, close the connection.
-#define SRS_PAUSED_RECV_TMMS (3 * 60 * 1000)
+#define SRS_PAUSED_RECV_TIMEOUT (3 * SRS_UTIME_MINUTES)
 
 // when edge timeout, retry next.
-#define SRS_EDGE_TOKEN_TRAVERSE_TMMS (3000)
+#define SRS_EDGE_TOKEN_TRAVERSE_TIMEOUT (3 * SRS_UTIME_SECONDS)
 
-SrsSimpleRtmpClient::SrsSimpleRtmpClient(string u, int64_t ctm, int64_t stm) : SrsBasicRtmpClient(u, ctm, stm)
+SrsSimpleRtmpClient::SrsSimpleRtmpClient(string u, srs_utime_t ctm, srs_utime_t stm) : SrsBasicRtmpClient(u, ctm, stm)
 {
 }
 
@@ -87,13 +81,13 @@ SrsSimpleRtmpClient::~SrsSimpleRtmpClient()
 
 srs_error_t SrsSimpleRtmpClient::connect_app()
 {
-    std::vector<std::string> ips = srs_get_local_ips();
+    std::vector<SrsIPAddress*>& ips = srs_get_local_ips();
     assert(_srs_config->get_stats_network() < (int)ips.size());
-    std::string local_ip = ips[_srs_config->get_stats_network()];
+    SrsIPAddress* local_ip = ips[_srs_config->get_stats_network()];
     
     bool debug_srs_upnode = _srs_config->get_debug_srs_upnode(req->vhost);
     
-    return do_connect_app(local_ip, debug_srs_upnode);
+    return do_connect_app(local_ip->ip, debug_srs_upnode);
 }
 
 SrsClientInfo::SrsClientInfo()
@@ -110,9 +104,23 @@ SrsClientInfo::~SrsClientInfo()
     srs_freep(res);
 }
 
-SrsRtmpConn::SrsRtmpConn(SrsServer* svr, srs_netfd_t c, string cip) : SrsConnection(svr, c, cip)
+SrsRtmpConn::SrsRtmpConn(SrsServer* svr, srs_netfd_t c, string cip, int cport)
 {
+    // Create a identify for this client.
+    _srs_context->set_id(_srs_context->generate_id());
+
     server = svr;
+
+    stfd = c;
+    skt = new SrsTcpConnection(c);
+    manager = svr;
+    ip = cip;
+    port = cport;
+    create_time = srsu2ms(srs_get_system_time());
+    clk = new SrsWallClock();
+    kbps = new SrsKbps(clk);
+    kbps->set_io(skt, skt);
+    trd = new SrsSTCoroutine("rtmp", this, _srs_context->get_id());
     
     rtmp = new SrsRtmpServer(skt);
     refer = new SrsRefer();
@@ -122,11 +130,14 @@ SrsRtmpConn::SrsRtmpConn(SrsServer* svr, srs_netfd_t c, string cip) : SrsConnect
     wakable = NULL;
     
     mw_sleep = SRS_PERF_MW_SLEEP;
-    mw_enabled = false;
+    mw_msgs = 0;
     realtime = SRS_PERF_MIN_LATENCY_ENABLED;
     send_min_interval = 0;
     tcp_nodelay = false;
     info = new SrsClientInfo();
+
+    publish_1stpkt_timeout = 0;
+    publish_normal_timeout = 0;
     
     _srs_config->subscribe(this);
 }
@@ -134,6 +145,17 @@ SrsRtmpConn::SrsRtmpConn(SrsServer* svr, srs_netfd_t c, string cip) : SrsConnect
 SrsRtmpConn::~SrsRtmpConn()
 {
     _srs_config->unsubscribe(this);
+
+    trd->interrupt();
+    // wakeup the handler which need to notice.
+    if (wakable) {
+        wakable->wakeup();
+    }
+    srs_freep(trd);
+
+    srs_freep(kbps);
+    srs_freep(clk);
+    srs_freep(skt);
     
     srs_freep(info);
     srs_freep(rtmp);
@@ -142,14 +164,9 @@ SrsRtmpConn::~SrsRtmpConn()
     srs_freep(security);
 }
 
-void SrsRtmpConn::dispose()
+std::string SrsRtmpConn::desc()
 {
-    SrsConnection::dispose();
-    
-    // wakeup the handler which need to notice.
-    if (wakable) {
-        wakable->wakeup();
-    }
+    return "RtmpConn";
 }
 
 // TODO: return detail message when error for client.
@@ -157,20 +174,19 @@ srs_error_t SrsRtmpConn::do_cycle()
 {
     srs_error_t err = srs_success;
     
-    srs_trace("RTMP client ip=%s, fd=%d", ip.c_str(), srs_netfd_fileno(stfd));
+    srs_trace("RTMP client ip=%s:%d, fd=%d", ip.c_str(), port, srs_netfd_fileno(stfd));
     
-    // notify kafka cluster.
-#ifdef SRS_AUTO_KAFKA
-    if ((err = _srs_kafka->on_client(srs_id(), SrsListenerRtmpStream, ip)) != srs_success) {
-        return srs_error_wrap(err, "kafka on client");
-    }
-#endif
-    
-    rtmp->set_recv_timeout(SRS_CONSTS_RTMP_TMMS);
-    rtmp->set_send_timeout(SRS_CONSTS_RTMP_TMMS);
+    rtmp->set_recv_timeout(SRS_CONSTS_RTMP_TIMEOUT);
+    rtmp->set_send_timeout(SRS_CONSTS_RTMP_TIMEOUT);
 
     if ((err = rtmp->handshake()) != srs_success) {
         return srs_error_wrap(err, "rtmp handshake");
+    }
+
+    uint32_t rip = rtmp->proxy_real_ip();
+    if (rip > 0) {
+        srs_trace("RTMP proxy real client ip=%d.%d.%d.%d",
+            uint8_t(rip>>24), uint8_t(rip>>16), uint8_t(rip>>8), uint8_t(rip));
     }
     
     SrsRequest* req = info->req;
@@ -265,12 +281,16 @@ srs_error_t SrsRtmpConn::on_reload_vhost_play(string vhost)
     
     // send_min_interval
     if (true) {
-        double v = _srs_config->get_send_min_interval(vhost);
+        srs_utime_t v = _srs_config->get_send_min_interval(vhost);
         if (v != send_min_interval) {
-            srs_trace("apply smi %.2f=>%.2f", send_min_interval, v);
+            srs_trace("apply smi %d=>%d ms", srsu2msi(send_min_interval), srsu2msi(v));
             send_min_interval = v;
         }
     }
+
+    mw_msgs = _srs_config->get_mw_msgs(req->vhost, realtime);
+    mw_sleep = _srs_config->get_mw_sleep(req->vhost);
+    skt->set_socket_buffer(mw_sleep);
     
     return err;
 }
@@ -305,6 +325,10 @@ srs_error_t SrsRtmpConn::on_reload_vhost_realtime(string vhost)
         srs_trace("realtime changed %d=>%d", realtime, realtime_enabled);
         realtime = realtime_enabled;
     }
+
+    mw_msgs = _srs_config->get_mw_msgs(req->vhost, realtime);
+    mw_sleep = _srs_config->get_mw_sleep(req->vhost);
+    skt->set_socket_buffer(mw_sleep);
     
     return err;
 }
@@ -319,15 +343,15 @@ srs_error_t SrsRtmpConn::on_reload_vhost_publish(string vhost)
         return err;
     }
     
-    int p1stpt = _srs_config->get_publish_1stpkt_timeout(req->vhost);
+    srs_utime_t p1stpt = _srs_config->get_publish_1stpkt_timeout(req->vhost);
     if (p1stpt != publish_1stpkt_timeout) {
-        srs_trace("p1stpt changed %d=>%d", publish_1stpkt_timeout, p1stpt);
+        srs_trace("p1stpt changed %d=>%d", srsu2msi(publish_1stpkt_timeout), srsu2msi(p1stpt));
         publish_1stpkt_timeout = p1stpt;
     }
     
-    int pnt = _srs_config->get_publish_normal_timeout(req->vhost);
+    srs_utime_t pnt = _srs_config->get_publish_normal_timeout(req->vhost);
     if (pnt != publish_normal_timeout) {
-        srs_trace("pnt changed %d=>%d", publish_normal_timeout, pnt);
+        srs_trace("pnt changed %d=>%d", srsu2msi(publish_normal_timeout), srsu2msi(pnt));
         publish_normal_timeout = pnt;
     }
     
@@ -388,7 +412,6 @@ srs_error_t SrsRtmpConn::service_cycle()
     }
     
     while (true) {
-        srs_error_t err = srs_success;
         if ((err = trd->pull()) != srs_success) {
             return srs_error_wrap(err, "rtmp: thread quit");
         }
@@ -397,8 +420,8 @@ srs_error_t SrsRtmpConn::service_cycle()
         
         // stream service must terminated with error, never success.
         // when terminated with success, it's user required to stop.
-        if (srs_error_code(err) == ERROR_SUCCESS) {
-            srs_freep(err);
+        // TODO: FIXME: Support RTMP client timeout, https://github.com/ossrs/srs/issues/1134
+        if (err == srs_success) {
             continue;
         }
         
@@ -410,10 +433,10 @@ srs_error_t SrsRtmpConn::service_cycle()
         // for republish, continue service
         if (srs_error_code(err) == ERROR_CONTROL_REPUBLISH) {
             // set timeout to a larger value, wait for encoder to republish.
-            rtmp->set_send_timeout(SRS_REPUBLISH_RECV_TMMS);
-            rtmp->set_recv_timeout(SRS_REPUBLISH_SEND_TMMS);
+            rtmp->set_send_timeout(SRS_REPUBLISH_RECV_TIMEOUT);
+            rtmp->set_recv_timeout(SRS_REPUBLISH_SEND_TIMEOUT);
             
-            srs_trace("rtmp: retry for republish");
+            srs_info("rtmp: retry for republish");
             srs_freep(err);
             continue;
         }
@@ -424,8 +447,8 @@ srs_error_t SrsRtmpConn::service_cycle()
             // TODO: FIXME: use ping message to anti-death of socket.
             // @see: https://github.com/ossrs/srs/issues/39
             // set timeout to a larger value, for user paused.
-            rtmp->set_recv_timeout(SRS_PAUSED_RECV_TMMS);
-            rtmp->set_send_timeout(SRS_PAUSED_SEND_TMMS);
+            rtmp->set_recv_timeout(SRS_PAUSED_RECV_TIMEOUT);
+            rtmp->set_send_timeout(SRS_PAUSED_SEND_TIMEOUT);
             
             srs_trace("rtmp: retry for close");
             srs_freep(err);
@@ -451,8 +474,8 @@ srs_error_t SrsRtmpConn::stream_service_cycle()
     
     srs_discovery_tc_url(req->tcUrl, req->schema, req->host, req->vhost, req->app, req->stream, req->port, req->param);
     req->strip();
-    srs_trace("client identified, type=%s, vhost=%s, app=%s, stream=%s, param=%s, duration=%.2f",
-        srs_client_type_string(info->type).c_str(), req->vhost.c_str(), req->app.c_str(), req->stream.c_str(), req->param.c_str(), req->duration);
+    srs_trace("client identified, type=%s, vhost=%s, app=%s, stream=%s, param=%s, duration=%dms",
+        srs_client_type_string(info->type).c_str(), req->vhost.c_str(), req->app.c_str(), req->stream.c_str(), req->param.c_str(), srsu2msi(req->duration));
     
     // discovery vhost, resolve the vhost from config
     SrsConfDirective* parsed_vhost = _srs_config->get_vhost(req->vhost);
@@ -498,12 +521,12 @@ srs_error_t SrsRtmpConn::stream_service_cycle()
     }
 
     // client is identified, set the timeout to service timeout.
-    rtmp->set_recv_timeout(SRS_CONSTS_RTMP_TMMS);
-    rtmp->set_send_timeout(SRS_CONSTS_RTMP_TMMS);
+    rtmp->set_recv_timeout(SRS_CONSTS_RTMP_TIMEOUT);
+    rtmp->set_send_timeout(SRS_CONSTS_RTMP_TIMEOUT);
     
     // find a source to serve.
     SrsSource* source = NULL;
-    if ((err = SrsSource::fetch_or_create(req, server, &source)) != srs_success) {
+    if ((err = _srs_sources->fetch_or_create(req, server, &source)) != srs_success) {
         return srs_error_wrap(err, "rtmp: fetch source");
     }
     srs_assert(source != NULL);
@@ -515,8 +538,8 @@ srs_error_t SrsRtmpConn::stream_service_cycle()
     }
     
     bool enabled_cache = _srs_config->get_gop_cache(req->vhost);
-    srs_trace("source url=%s, ip=%s, cache=%d, is_edge=%d, source_id=%d[%d]",
-        req->get_stream_url().c_str(), ip.c_str(), enabled_cache, info->edge, source->source_id(), source->source_id());
+    srs_trace("source url=%s, ip=%s, cache=%d, is_edge=%d, source_id=%s/%s",
+        req->get_stream_url().c_str(), ip.c_str(), enabled_cache, info->edge, source->source_id().c_str(), source->pre_source_id().c_str());
     source->set_cache(enabled_cache);
     
     switch (info->type) {
@@ -614,17 +637,32 @@ srs_error_t SrsRtmpConn::playing(SrsSource* source)
     if (!info->edge && _srs_config->get_vhost_origin_cluster(req->vhost) && source->inactive()) {
         vector<string> coworkers = _srs_config->get_vhost_coworkers(req->vhost);
         for (int i = 0; i < (int)coworkers.size(); i++) {
-            int port;
-            string host;
-            string url = "http://" + coworkers.at(i) + "/api/v1/clusters?"
-                + "vhost=" + req->vhost + "&ip=" + req->host + "&app=" + req->app + "&stream=" + req->stream;
+            // TODO: FIXME: User may config the server itself as coworker, we must identify and ignore it.
+            string host; int port = 0; string coworker = coworkers.at(i);
+
+            string url = "http://" + coworker + "/api/v1/clusters?"
+                + "vhost=" + req->vhost + "&ip=" + req->host + "&app=" + req->app + "&stream=" + req->stream
+                + "&coworker=" + coworker;
             if ((err = SrsHttpHooks::discover_co_workers(url, host, port)) != srs_success) {
+                // If failed to discovery stream in this coworker, we should request the next one util the last.
+                // @see https://github.com/ossrs/srs/issues/1223
+                if (i < (int)coworkers.size() - 1) {
+                    continue;
+                }
                 return srs_error_wrap(err, "discover coworkers, url=%s", url.c_str());
             }
-            srs_trace("rtmp: redirect in cluster, url=%s, target=%s:%d", url.c_str(), host.c_str(), port);
+
+            string rurl = srs_generate_rtmp_url(host, port, req->host, req->vhost, req->app, req->stream, req->param);
+            srs_trace("rtmp: redirect in cluster, from=%s:%d, target=%s:%d, url=%s, rurl=%s",
+                req->host.c_str(), req->port, host.c_str(), port, url.c_str(), rurl.c_str());
+
+            // Ignore if host or port is invalid.
+            if (host.empty() || port == 0) {
+                continue;
+            }
             
             bool accepted = false;
-            if ((err = rtmp->redirect(req, host, port, accepted)) != srs_success) {
+            if ((err = rtmp->redirect(req, rurl, accepted)) != srs_success) {
                 srs_error_reset(err);
             } else {
                 return srs_error_new(ERROR_CONTROL_REDIRECT, "redirected");
@@ -639,14 +677,17 @@ srs_error_t SrsRtmpConn::playing(SrsSource* source)
     
     // Create a consumer of source.
     SrsConsumer* consumer = NULL;
-    if ((err = source->create_consumer(this, consumer)) != srs_success) {
+    SrsAutoFree(SrsConsumer, consumer);
+    if ((err = source->create_consumer(consumer)) != srs_success) {
         return srs_error_wrap(err, "rtmp: create consumer");
     }
-    SrsAutoFree(SrsConsumer, consumer);
+    if ((err = source->consumer_dumps(consumer)) != srs_success) {
+        return srs_error_wrap(err, "rtmp: dumps consumer");
+    }
     
     // Use receiving thread to receive packets from peer.
     // @see: https://github.com/ossrs/srs/issues/217
-    SrsQueueRecvThread trd(consumer, rtmp, SRS_PERF_MW_SLEEP);
+    SrsQueueRecvThread trd(consumer, rtmp, SRS_PERF_MW_SLEEP, _srs_context->get_id());
     
     if ((err = trd.start()) != srs_success) {
         return srs_error_wrap(err, "rtmp: start receive thread");
@@ -682,28 +723,29 @@ srs_error_t SrsRtmpConn::do_playing(SrsSource* source, SrsConsumer* consumer, Sr
     SrsMessageArray msgs(SRS_PERF_MW_MSGS);
     bool user_specified_duration_to_stop = (req->duration > 0);
     int64_t starttime = -1;
-    
+
     // setup the realtime.
     realtime = _srs_config->get_realtime_enabled(req->vhost);
     // setup the mw config.
     // when mw_sleep changed, resize the socket send buffer.
-    mw_enabled = true;
-    change_mw_sleep(_srs_config->get_mw_sleep_ms(req->vhost));
+    mw_msgs = _srs_config->get_mw_msgs(req->vhost, realtime);
+    mw_sleep = _srs_config->get_mw_sleep(req->vhost);
+    skt->set_socket_buffer(mw_sleep);
     // initialize the send_min_interval
     send_min_interval = _srs_config->get_send_min_interval(req->vhost);
     
-    srs_trace("start play smi=%.2f, mw_sleep=%d, mw_enabled=%d, realtime=%d, tcp_nodelay=%d",
-        send_min_interval, mw_sleep, mw_enabled, realtime, tcp_nodelay);
+    srs_trace("start play smi=%dms, mw_sleep=%d, mw_msgs=%d, realtime=%d, tcp_nodelay=%d",
+        srsu2msi(send_min_interval), srsu2msi(mw_sleep), mw_msgs, realtime, tcp_nodelay);
     
     while (true) {
-        // collect elapse for pithy print.
-        pprint->elapse();
-        
         // when source is set to expired, disconnect it.
         if ((err = trd->pull()) != srs_success) {
             return srs_error_wrap(err, "rtmp: thread quit");
         }
-        
+
+        // collect elapse for pithy print.
+        pprint->elapse();
+
         // to use isolate thread to recv, can improve about 33% performance.
         // @see: https://github.com/ossrs/srs/issues/196
         // @see: https://github.com/ossrs/srs/issues/217
@@ -723,13 +765,7 @@ srs_error_t SrsRtmpConn::do_playing(SrsSource* source, SrsConsumer* consumer, Sr
         // wait for message to incoming.
         // @see https://github.com/ossrs/srs/issues/251
         // @see https://github.com/ossrs/srs/issues/257
-        if (realtime) {
-            // for realtime, min required msgs is 0, send when got one+ msgs.
-            consumer->wait(0, mw_sleep);
-        } else {
-            // for no-realtime, got some msgs then send.
-            consumer->wait(SRS_PERF_MW_MIN_MSGS, mw_sleep);
-        }
+        consumer->wait(mw_msgs, mw_sleep);
 #endif
         
         // get messages from consumer.
@@ -739,18 +775,18 @@ srs_error_t SrsRtmpConn::do_playing(SrsSource* source, SrsConsumer* consumer, Sr
         if ((err = consumer->dump_packets(&msgs, count)) != srs_success) {
             return srs_error_wrap(err, "rtmp: consumer dump packets");
         }
-        
+
         // reportable
         if (pprint->can_print()) {
             kbps->sample();
-            srs_trace("-> " SRS_CONSTS_LOG_PLAY " time=%d, msgs=%d, okbps=%d,%d,%d, ikbps=%d,%d,%d, mw=%d",
+            srs_trace("-> " SRS_CONSTS_LOG_PLAY " time=%d, msgs=%d, okbps=%d,%d,%d, ikbps=%d,%d,%d, mw=%d/%d",
                 (int)pprint->age(), count, kbps->get_send_kbps(), kbps->get_send_kbps_30s(), kbps->get_send_kbps_5m(),
-                kbps->get_recv_kbps(), kbps->get_recv_kbps_30s(), kbps->get_recv_kbps_5m(), mw_sleep);
+                kbps->get_recv_kbps(), kbps->get_recv_kbps_30s(), kbps->get_recv_kbps_5m(), srsu2msi(mw_sleep), mw_msgs);
         }
         
         if (count <= 0) {
 #ifndef SRS_PERF_QUEUE_COND_WAIT
-            srs_usleep(mw_sleep * 1000);
+            srs_usleep(mw_sleep);
 #endif
             // ignore when nothing got.
             continue;
@@ -767,7 +803,7 @@ srs_error_t SrsRtmpConn::do_playing(SrsSource* source, SrsConsumer* consumer, Sr
                 if (starttime < 0 || starttime > msg->timestamp) {
                     starttime = msg->timestamp;
                 }
-                duration += msg->timestamp - starttime;
+                duration += (msg->timestamp - starttime) * SRS_UTIME_MILLISECONDS;
                 starttime = msg->timestamp;
             }
         }
@@ -781,15 +817,19 @@ srs_error_t SrsRtmpConn::do_playing(SrsSource* source, SrsConsumer* consumer, Sr
         // if duration specified, and exceed it, stop play live.
         // @see: https://github.com/ossrs/srs/issues/45
         if (user_specified_duration_to_stop) {
-            if (duration >= (int64_t)req->duration) {
-                return srs_error_new(ERROR_RTMP_DURATION_EXCEED, "rtmp: time %d up %d", (int)duration, (int)req->duration);
+            if (duration >= req->duration) {
+                return srs_error_new(ERROR_RTMP_DURATION_EXCEED, "rtmp: time %d up %d", srsu2msi(duration), srsu2msi(req->duration));
             }
         }
         
-        // apply the minimal interval for delivery stream in ms.
+        // apply the minimal interval for delivery stream in srs_utime_t.
         if (send_min_interval > 0) {
-            srs_usleep((int64_t)(send_min_interval * 1000));
+            srs_usleep(send_min_interval);
         }
+
+        // Yield to another coroutines.
+        // @see https://github.com/ossrs/srs/issues/2194#issuecomment-777437476
+        srs_thread_yield();
     }
     
     return err;
@@ -815,7 +855,7 @@ srs_error_t SrsRtmpConn::publishing(SrsSource* source)
     if ((err = acquire_publish(source)) == srs_success) {
         // use isolate thread to recv,
         // @see: https://github.com/ossrs/srs/issues/237
-        SrsPublishRecvThread rtrd(rtmp, req, srs_netfd_fileno(stfd), 0, this, source);
+        SrsPublishRecvThread rtrd(rtmp, req, srs_netfd_fileno(stfd), 0, this, source, _srs_context->get_id());
         err = do_publishing(source, &rtrd);
         rtrd.stop();
     }
@@ -847,11 +887,6 @@ srs_error_t SrsRtmpConn::do_publishing(SrsSource* source, SrsPublishRecvThread* 
         return srs_error_wrap(err, "rtmp: receive thread");
     }
     
-    // change the isolate recv thread context id,
-    // merge its log to current thread.
-    int receive_thread_cid = rtrd->get_cid();
-    rtrd->set_cid(_srs_context->get_id());
-    
     // initialize the publish timeout.
     publish_1stpkt_timeout = _srs_config->get_publish_1stpkt_timeout(req->vhost);
     publish_normal_timeout = _srs_config->get_publish_normal_timeout(req->vhost);
@@ -861,20 +896,20 @@ srs_error_t SrsRtmpConn::do_publishing(SrsSource* source, SrsPublishRecvThread* 
     
     if (true) {
         bool mr = _srs_config->get_mr_enabled(req->vhost);
-        int mr_sleep = _srs_config->get_mr_sleep_ms(req->vhost);
-        srs_trace("start publish mr=%d/%d, p1stpt=%d, pnt=%d, tcp_nodelay=%d, rtcid=%d",
-            mr, mr_sleep, publish_1stpkt_timeout, publish_normal_timeout, tcp_nodelay, receive_thread_cid);
+        srs_utime_t mr_sleep = _srs_config->get_mr_sleep(req->vhost);
+        srs_trace("start publish mr=%d/%d, p1stpt=%d, pnt=%d, tcp_nodelay=%d",
+            mr, srsu2msi(mr_sleep), srsu2msi(publish_1stpkt_timeout), srsu2msi(publish_normal_timeout), tcp_nodelay);
     }
     
     int64_t nb_msgs = 0;
     uint64_t nb_frames = 0;
     while (true) {
-        pprint->elapse();
-        
         if ((err = trd->pull()) != srs_success) {
             return srs_error_wrap(err, "rtmp: thread quit");
         }
-        
+
+        pprint->elapse();
+
         // cond wait for timeout.
         if (nb_msgs == 0) {
             // when not got msgs, wait for a larger timeout.
@@ -892,7 +927,7 @@ srs_error_t SrsRtmpConn::do_publishing(SrsSource* source, SrsPublishRecvThread* 
         // when not got any messages, timeout.
         if (rtrd->nb_msgs() <= nb_msgs) {
             return srs_error_new(ERROR_SOCKET_TIMEOUT, "rtmp: publish timeout %dms, nb_msgs=%d",
-                nb_msgs? publish_normal_timeout : publish_1stpkt_timeout, (int)nb_msgs);
+                nb_msgs? srsu2msi(publish_normal_timeout) : srsu2msi(publish_1stpkt_timeout), (int)nb_msgs);
         }
         nb_msgs = rtrd->nb_msgs();
         
@@ -908,10 +943,11 @@ srs_error_t SrsRtmpConn::do_publishing(SrsSource* source, SrsPublishRecvThread* 
         if (pprint->can_print()) {
             kbps->sample();
             bool mr = _srs_config->get_mr_enabled(req->vhost);
-            int mr_sleep = _srs_config->get_mr_sleep_ms(req->vhost);
+            srs_utime_t mr_sleep = _srs_config->get_mr_sleep(req->vhost);
             srs_trace("<- " SRS_CONSTS_LOG_CLIENT_PUBLISH " time=%d, okbps=%d,%d,%d, ikbps=%d,%d,%d, mr=%d/%d, p1stpt=%d, pnt=%d",
                 (int)pprint->age(), kbps->get_send_kbps(), kbps->get_send_kbps_30s(), kbps->get_send_kbps_5m(),
-                kbps->get_recv_kbps(), kbps->get_recv_kbps_30s(), kbps->get_recv_kbps_5m(), mr, mr_sleep, publish_1stpkt_timeout, publish_normal_timeout);
+                kbps->get_recv_kbps(), kbps->get_recv_kbps_30s(), kbps->get_recv_kbps_5m(), mr, srsu2msi(mr_sleep),
+                srsu2msi(publish_1stpkt_timeout), srsu2msi(publish_normal_timeout));
         }
     }
     
@@ -1111,16 +1147,6 @@ srs_error_t SrsRtmpConn::process_play_control_msg(SrsConsumer* consumer, SrsComm
     return err;
 }
 
-void SrsRtmpConn::change_mw_sleep(int sleep_ms)
-{
-    if (!mw_enabled) {
-        return;
-    }
-    
-    set_socket_buffer(sleep_ms);
-    mw_sleep = sleep_ms;
-}
-
 void SrsRtmpConn::set_sock_options()
 {
     SrsRequest* req = info->req;
@@ -1129,7 +1155,7 @@ void SrsRtmpConn::set_sock_options()
     if (nvalue != tcp_nodelay) {
         tcp_nodelay = nvalue;
         
-        srs_error_t err = set_tcp_nodelay(tcp_nodelay);
+        srs_error_t err = skt->set_tcp_nodelay(tcp_nodelay);
         if (err != srs_success) {
             srs_warn("ignore err %s", srs_error_desc(err).c_str());
             srs_freep(err);
@@ -1157,7 +1183,7 @@ srs_error_t SrsRtmpConn::check_edge_token_traverse_auth()
         int port = SRS_CONSTS_RTMP_DEFAULT_PORT;
         srs_parse_hostport(hostport, server, port);
         
-        SrsTcpClient* transport = new SrsTcpClient(server, port, SRS_EDGE_TOKEN_TRAVERSE_TMMS);
+        SrsTcpClient* transport = new SrsTcpClient(server, port, SRS_EDGE_TOKEN_TRAVERSE_TIMEOUT);
         SrsAutoFree(SrsTcpClient, transport);
         
         if ((err = transport->connect()) != srs_success) {
@@ -1181,15 +1207,16 @@ srs_error_t SrsRtmpConn::do_token_traverse_auth(SrsRtmpClient* client)
     SrsRequest* req = info->req;
     srs_assert(client);
     
-    client->set_recv_timeout(SRS_CONSTS_RTMP_TMMS);
-    client->set_send_timeout(SRS_CONSTS_RTMP_TMMS);
+    client->set_recv_timeout(SRS_CONSTS_RTMP_TIMEOUT);
+    client->set_send_timeout(SRS_CONSTS_RTMP_TIMEOUT);
     
     if ((err = client->handshake()) != srs_success) {
         return srs_error_wrap(err, "rtmp: handshake");
     }
     
     // for token tranverse, always take the debug info(which carries token).
-    if ((err = client->connect_app(req->app, req->tcUrl, req, true, NULL)) != srs_success) {
+    SrsServerInfo si;
+    if ((err = client->connect_app(req->app, req->tcUrl, req, true, &si)) != srs_success) {
         return srs_error_wrap(err, "rtmp: connect tcUrl");
     }
     
@@ -1202,12 +1229,6 @@ srs_error_t SrsRtmpConn::on_disconnect()
     srs_error_t err = srs_success;
     
     http_hooks_on_close();
-    
-#ifdef SRS_AUTO_KAFKA
-    if ((err = _srs_kafka->on_close(srs_id())) != srs_success) {
-        return srs_error_wrap(err, "kafka on close");
-    }
-#endif
     
     // TODO: FIXME: Implements it.
     
@@ -1406,5 +1427,70 @@ void SrsRtmpConn::http_hooks_on_stop()
     }
     
     return;
+}
+
+srs_error_t SrsRtmpConn::start()
+{
+    srs_error_t err = srs_success;
+
+    if ((err = skt->initialize()) != srs_success) {
+        return srs_error_wrap(err, "init socket");
+    }
+
+    if ((err = trd->start()) != srs_success) {
+        return srs_error_wrap(err, "coroutine");
+    }
+
+    return err;
+}
+
+srs_error_t SrsRtmpConn::cycle()
+{
+    srs_error_t err = do_cycle();
+
+    // Notify manager to remove it.
+    // Note that we create this object, so we use manager to remove it.
+    manager->remove(this);
+
+    // success.
+    if (err == srs_success) {
+        srs_trace("client finished.");
+        return err;
+    }
+
+    // It maybe success with message.
+    if (srs_error_code(err) == ERROR_SUCCESS) {
+        srs_trace("client finished%s.", srs_error_summary(err).c_str());
+        srs_freep(err);
+        return err;
+    }
+
+    // client close peer.
+    // TODO: FIXME: Only reset the error when client closed it.
+    if (srs_is_client_gracefully_close(err)) {
+        srs_warn("client disconnect peer. ret=%d", srs_error_code(err));
+    } else if (srs_is_server_gracefully_close(err)) {
+        srs_warn("server disconnect. ret=%d", srs_error_code(err));
+    } else {
+        srs_error("serve error %s", srs_error_desc(err).c_str());
+    }
+
+    srs_freep(err);
+    return srs_success;
+}
+
+string SrsRtmpConn::remote_ip()
+{
+    return ip;
+}
+
+const SrsContextId& SrsRtmpConn::get_id()
+{
+    return trd->cid();
+}
+
+void SrsRtmpConn::expire()
+{
+    trd->interrupt();
 }
 

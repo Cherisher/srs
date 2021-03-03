@@ -1,7 +1,7 @@
 /**
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2019 Winlin
+ * Copyright (c) 2013-2020 Winlin
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -32,34 +32,23 @@
 
 class SrsConfDirective;
 
-/**
- * the security apply on vhost.
- * @see https://github.com/ossrs/srs/issues/211
- */
+// The security apply on vhost.
+// @see https://github.com/ossrs/srs/issues/211
 class SrsSecurity
 {
 public:
     SrsSecurity();
     virtual ~SrsSecurity();
 public:
-    /**
-     * security check the client apply by vhost security strategy
-     * @param type the client type, publish or play.
-     * @param ip the ip address of client.
-     * @param req the request object of client.
-     */
+    // Security check the client apply by vhost security strategy
+    // @param type the client type, publish or play.
+    // @param ip the ip address of client.
+    // @param req the request object of client.
     virtual srs_error_t check(SrsRtmpConnType type, std::string ip, SrsRequest* req);
 private:
-    /**
-     * security check the allow,
-     * @return, if allowed, ERROR_SYSTEM_SECURITY_ALLOW.
-     */
-    virtual int allow_check(SrsConfDirective* rules, SrsRtmpConnType type, std::string ip);
-    /**
-     * security check the deny,
-     * @return, if denied, ERROR_SYSTEM_SECURITY_DENY.
-     */
-    virtual int deny_check(SrsConfDirective* rules, SrsRtmpConnType type, std::string ip);
+    virtual srs_error_t do_check(SrsConfDirective* rules, SrsRtmpConnType type, std::string ip, SrsRequest* req);
+    virtual srs_error_t allow_check(SrsConfDirective* rules, SrsRtmpConnType type, std::string ip);
+    virtual srs_error_t deny_check(SrsConfDirective* rules, SrsRtmpConnType type, std::string ip);
 };
 
 #endif
